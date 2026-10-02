@@ -1,4 +1,4 @@
-# Cypher MCP ⚡
+# Cypher MCP
 
 [![Release](https://img.shields.io/github/v/release/vmikhailov/cypher-mcp?color=blue)](https://github.com/vmikhailov/cypher-mcp/releases)
 [![CI](https://github.com/vmikhailov/cypher-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/vmikhailov/cypher-mcp/actions/workflows/ci.yml)
@@ -12,7 +12,7 @@ Powered by [`cypher-sql-go`](https://github.com/vmikhailov/cypher-sql-go) and pu
 
 ---
 
-## 🌟 Why Cypher MCP?
+## Why Cypher MCP?
 
 Traditional AI agent memory architectures suffer from major tradeoffs:
 * **Vector RAG:** Fails at deterministic multi-hop reasoning (*"Who is the landlord of the apartment where my son studies?"*).
@@ -20,14 +20,14 @@ Traditional AI agent memory architectures suffer from major tradeoffs:
 * **Raw SQL / Text Memory:** LLMs hallucinate complex recursive CTEs or flood their context window with raw files.
 
 **Cypher MCP bridges this gap:**
-1. **⚡ Sub-Millisecond Speed:** In-process query transpilation and execution runs in **< 0.5 ms** (total stdio roundtrip).
-2. **📦 Zero-CGO Static Binary:** Single **~15MB** self-contained executable with zero runtime dependencies. No Docker, no Python, no C++ compilers.
-3. **🧠 Native Agent Fluency:** LLMs intuitively generate OpenCypher graph traversals (`MATCH (p:Person)-[:OWES]->(o) RETURN o`) with near 100% accuracy.
-4. **💾 ACID Relational Foundation:** Single standard SQLite `.db` file powered by relational B-Tree indexes and JSON1.
+1. **Sub-Millisecond Speed:** In-process query transpilation and execution runs in **< 0.5 ms** (total stdio roundtrip).
+2. **Zero-CGO Static Binary:** Single **~15MB** self-contained executable with zero runtime dependencies. No Docker, no Python, no C++ compilers.
+3. **Native Agent Fluency:** LLMs intuitively generate OpenCypher graph traversals (`MATCH (p:Person)-[:OWES]->(o) RETURN o`) with near 100% accuracy.
+4. **ACID Relational Foundation:** Single standard SQLite `.db` file powered by relational B-Tree indexes and JSON1.
 
 ---
 
-## 🛠️ MCP Tools
+## MCP Tools
 
 `cypher-mcp` exposes 5 standard MCP tools via JSON-RPC 2.0 (stdio):
 
@@ -41,7 +41,7 @@ Traditional AI agent memory architectures suffer from major tradeoffs:
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Download Prebuilt Binary
 Grab the latest static binary for your OS and architecture from [Releases](https://github.com/vmikhailov/cypher-mcp/releases):
@@ -94,7 +94,7 @@ mcp:
 
 ---
 
-## 🗄️ Relational Schema
+## Relational Schema
 
 `cypher-mcp` automatically initializes the following universal graph schema if the database does not exist:
 
@@ -120,7 +120,7 @@ CREATE INDEX idx_nodes_kind ON nodes(kind);
 
 ---
 
-## 🔨 Building from Source
+## Building from Source
 
 Requires Go 1.22+:
 
@@ -137,6 +137,6 @@ go test -v ./...
 
 ---
 
-## 📄 License
+## License
 
 MIT License. Copyright (c) 2026 Viacheslav Mikhailov.
