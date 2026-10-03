@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -373,4 +375,165 @@ func TestHandleSetEdge_ForeignKeysAndAtomicity(t *testing.T) {
 	if !strings.Contains(propsStr, `"v":2`) {
 		t.Fatalf("expected updated property v:2, got %s", propsStr)
 	}
+}
+
+func TestHandleGraphQuery_ReturnNodeAsObject(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-nodeobj-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "nodeobj.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init database: %v", err)
+	}
+	defer db.Close()
+
+	dbRO, err := initRODatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init ro database: %v", err)
+	}
+	defer dbRO.Close()
+
+	if _, err := handleSetNode(db, "person:alice", "Person", map[string]any{"city": "Prague", "age": 30}); err != nil {
+		t.Fatalf("failed to set node: %v", err)
+	}
+
+	resStr, err := handleGraphQuery(dbRO, "MATCH (p:Person) RETURN p")
+	if err != nil {
+		t.Fatalf("handleGraphQuery failed: %v", err)
+	}
+
+	var qRes struct {
+		Count   int              `json:"count"`
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(resStr), &qRes); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if qRes.Count != 1 {
+		t.Fatalf("expected 1 result, got %d", qRes.Count)
+	}
+
+	nodeVal, ok := qRes.Results[0]["p"]
+	if !ok {
+		t.Fatalf("expected key 'p' in result, got: %+v", qRes.Results[0])
+	}
+
+	// Must be parsed map, NOT a string!
+	nodeMap, ok := nodeVal.(map[string]any)
+	if !ok {
+		t.Fatalf("expected 'p' to be map[string]any, got %T: %+v", nodeVal, nodeVal)
+	}
+	if nodeMap["id"] != "person:alice" || nodeMap["kind"] != "Person" {
+		t.Fatalf("unexpected node content: %+v", nodeMap)
+	}
+}
+
+func TestEmptyValidation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-empty-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "empty.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init database: %v", err)
+	}
+	defer db.Close()
+
+	// Empty node id
+	if _, err := handleSetNode(db, "", "Person", nil); err == nil {
+		t.Fatalf("expected error for empty node id")
+	}
+	if _, err := handleSetNode(db, "   ", "Person", nil); err == nil {
+		t.Fatalf("expected error for whitespace node id")
+	}
+
+	// Empty node kind
+	if _, err := handleSetNode(db, "n1", "", nil); err == nil {
+		t.Fatalf("expected error for empty node kind")
+	}
+
+	// Empty edge fields
+	if _, err := handleSetEdge(db, "", "n2", "KNOWS", nil); err == nil {
+		t.Fatalf("expected error for empty edge 'from'")
+	}
+	if _, err := handleSetEdge(db, "n1", "", "KNOWS", nil); err == nil {
+		t.Fatalf("expected error for empty edge 'to'")
+	}
+	if _, err := handleSetEdge(db, "n1", "n2", "", nil); err == nil {
+		t.Fatalf("expected error for empty edge 'kind'")
+	}
+
+	// Empty delete node id
+	if _, err := handleDeleteNode(db, ""); err == nil {
+		t.Fatalf("expected error for empty delete node id")
+	}
+}
+
+func TestServer_MalformedJSON_ReturnsParseError(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-pipe-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "pipe.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init database: %v", err)
+	}
+	defer db.Close()
+
+	dbRO, err := initRODatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init ro database: %v", err)
+	}
+	defer dbRO.Close()
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	defer inR.Close()
+	defer outR.Close()
+
+	done := make(chan struct{})
+	go func() {
+		runServer(inR, outW, db, dbRO, nil)
+		close(done)
+	}()
+
+	// Send broken JSON
+	go func() {
+		inW.Write([]byte("{ broken json ...\n"))
+		inW.Close()
+	}()
+
+	scanner := bufio.NewScanner(outR)
+	if !scanner.Scan() {
+		t.Fatalf("expected response from server for malformed JSON, got none (EOF/timeout)")
+	}
+	line := scanner.Text()
+
+	var resp JSONRPCResponse
+	if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		t.Fatalf("failed to parse response JSON: %v, line: %s", err, line)
+	}
+	if resp.Error == nil {
+		t.Fatalf("expected error in response, got nil. Line: %s", line)
+	}
+	errMap, ok := resp.Error.(map[string]any)
+	if !ok {
+		t.Fatalf("expected error to be map[string]any, got %T", resp.Error)
+	}
+	errCode, ok := errMap["code"].(float64)
+	if !ok || int(errCode) != -32700 {
+		t.Fatalf("expected error code -32700, got: %v", errMap["code"])
+	}
+
+	<-done
 }

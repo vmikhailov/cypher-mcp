@@ -87,11 +87,10 @@ Add to `mcp_config.json` (or `.cursor/mcp.json`):
 Add to `config.yaml`:
 
 ```yaml
-mcp:
-  servers:
-    cypher_graph:
-      command: "cypher-mcp"
-      args: ["--db", "~/.hermes/knowledge_graph.db"]
+mcp_servers:
+  cypher_graph:
+    command: "cypher-mcp"
+    args: ["--db", "~/.hermes/knowledge_graph.db"]
 ```
 
 ---

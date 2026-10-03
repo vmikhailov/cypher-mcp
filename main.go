@@ -11,11 +11,18 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
-	"github.com/vmikhailov/cypher-sql-go"
+	cyphersql "github.com/vmikhailov/cypher-sql-go"
 	_ "modernc.org/sqlite"
+)
+
+var (
+	safeIdentifierRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+	backtickRegex       = regexp.MustCompile("`([^`]+)`")
+	jsonExtractRegex    = regexp.MustCompile(`^json_extract\(([a-zA-Z0-9_]+)\.[^,]+,\s*'\$\.([^']+)'\)`)
 )
 
 type JSONRPCRequest struct {
@@ -291,6 +298,16 @@ func stripCommentsAndSpace(s string) string {
 
 func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]any) (string, error) {
 	start := time.Now()
+
+	// Defense-in-depth: check variable-length paths and unsafe identifiers
+	if strings.Contains(cypherQuery, "-[*") || strings.Contains(cypherQuery, "*..") {
+		return "", fmt.Errorf("variable-length relationships are not yet supported")
+	}
+	for _, m := range backtickRegex.FindAllStringSubmatch(cypherQuery, -1) {
+		if !safeIdentifierRegex.MatchString(m[1]) {
+			return "", fmt.Errorf("invalid identifier %q: only alphanumeric characters and underscores are permitted", m[1])
+		}
+	}
 	var params map[string]any
 	if len(queryParams) > 0 && queryParams[0] != nil {
 		params = queryParams[0]
@@ -336,16 +353,32 @@ func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]
 
 		rowMap := make(map[string]any)
 		for i, colName := range cols {
-			val := colVals[i]
-			if b, ok := val.([]byte); ok {
-				var jsonParsed any
-				if err := json.Unmarshal(b, &jsonParsed); err == nil {
-					val = jsonParsed
-				} else {
-					val = string(b)
+			cleanCol := colName
+			if strings.HasPrefix(colName, "json_extract(") {
+				if m := jsonExtractRegex.FindStringSubmatch(colName); len(m) == 3 {
+					cleanCol = m[1] + "." + m[2]
 				}
 			}
-			rowMap[colName] = val
+			val := colVals[i]
+			switch v := val.(type) {
+			case []byte:
+				var jsonParsed any
+				if err := json.Unmarshal(v, &jsonParsed); err == nil {
+					val = jsonParsed
+				} else {
+					val = string(v)
+				}
+			case string:
+				trimmed := strings.TrimSpace(v)
+				if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+					(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+					var jsonParsed any
+					if err := json.Unmarshal([]byte(trimmed), &jsonParsed); err == nil {
+						val = jsonParsed
+					}
+				}
+			}
+			rowMap[cleanCol] = val
 		}
 		results = append(results, rowMap)
 	}
@@ -364,6 +397,12 @@ func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]
 }
 
 func handleSetNode(db *sql.DB, id, kind string, props map[string]any) (string, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("node id cannot be empty")
+	}
+	if strings.TrimSpace(kind) == "" {
+		return "", fmt.Errorf("node kind cannot be empty")
+	}
 	if props == nil {
 		props = make(map[string]any)
 	}
@@ -384,6 +423,15 @@ func handleSetNode(db *sql.DB, id, kind string, props map[string]any) (string, e
 }
 
 func handleSetEdge(db *sql.DB, from, to, kind string, props map[string]any) (string, error) {
+	if strings.TrimSpace(from) == "" {
+		return "", fmt.Errorf("edge 'from' cannot be empty")
+	}
+	if strings.TrimSpace(to) == "" {
+		return "", fmt.Errorf("edge 'to' cannot be empty")
+	}
+	if strings.TrimSpace(kind) == "" {
+		return "", fmt.Errorf("edge 'kind' cannot be empty")
+	}
 	if props == nil {
 		props = make(map[string]any)
 	}
@@ -430,6 +478,9 @@ func handleSetEdge(db *sql.DB, from, to, kind string, props map[string]any) (str
 }
 
 func handleDeleteNode(db *sql.DB, id string) (string, error) {
+	if strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("node id cannot be empty")
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return "", fmt.Errorf("begin transaction: %w", err)
@@ -535,8 +586,18 @@ func main() {
 	}
 	defer dbRO.Close()
 
-	reader := bufio.NewReader(os.Stdin)
-	writer := bufio.NewWriter(os.Stdout)
+	runServer(os.Stdin, os.Stdout, db, dbRO, logger)
+}
+
+func runServer(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger) {
+	logMsg := func(format string, v ...any) {
+		if logger != nil {
+			logger.Printf(format, v...)
+		}
+	}
+
+	reader := bufio.NewReader(in)
+	writer := bufio.NewWriter(out)
 
 	sendResponse := func(resp JSONRPCResponse) {
 		b, err := json.Marshal(resp)
@@ -552,6 +613,170 @@ func main() {
 
 	for {
 		line, err := reader.ReadBytes('\n')
+		trimmed := strings.TrimSpace(string(line))
+		if len(trimmed) > 0 {
+			logMsg("IN: %s", trimmed)
+
+			var req JSONRPCRequest
+			if errUnmarshal := json.Unmarshal([]byte(trimmed), &req); errUnmarshal != nil {
+				logMsg("JSON unmarshal error: %v", errUnmarshal)
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      nil,
+					Error: map[string]any{
+						"code":    -32700,
+						"message": "Parse error",
+					},
+				})
+			} else {
+				switch req.Method {
+				case "initialize":
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      req.ID,
+						Result: map[string]any{
+							"protocolVersion": "2024-11-05",
+							"capabilities": map[string]any{
+								"tools":     map[string]any{},
+								"resources": map[string]any{},
+								"prompts":   map[string]any{},
+							},
+							"serverInfo": map[string]any{
+								"name":    "cypher-graph-mcp",
+								"version": "1.0.0",
+							},
+						},
+					})
+
+				case "notifications/initialized":
+					logMsg("Client initialized notification received")
+
+				case "ping":
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      req.ID,
+						Result:  map[string]any{},
+					})
+
+				case "resources/list":
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      req.ID,
+						Result: map[string]any{
+							"resources": []any{},
+						},
+					})
+
+				case "prompts/list":
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      req.ID,
+						Result: map[string]any{
+							"prompts": []any{},
+						},
+					})
+
+				case "logging/setLevel":
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      req.ID,
+						Result:  map[string]any{},
+					})
+
+				case "tools/list":
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      req.ID,
+						Result: map[string]any{
+							"tools": serverTools,
+						},
+					})
+
+				case "tools/call":
+					var params ToolCallParams
+					if err := json.Unmarshal(req.Params, &params); err != nil {
+						sendResponse(JSONRPCResponse{
+							JSONRPC: "2.0",
+							ID:      req.ID,
+							Error: map[string]any{
+								"code":    -32602,
+								"message": "Invalid params",
+							},
+						})
+						continue
+					}
+
+					var outText string
+					var callErr error
+
+					switch params.Name {
+					case "graph_query":
+						query, _ := params.Arguments["query"].(string)
+						queryParams, _ := params.Arguments["params"].(map[string]any)
+						outText, callErr = handleGraphQuery(dbRO, query, queryParams)
+
+					case "graph_set_node":
+						id, _ := params.Arguments["id"].(string)
+						kind, _ := params.Arguments["kind"].(string)
+						props, _ := params.Arguments["properties"].(map[string]any)
+						outText, callErr = handleSetNode(db, id, kind, props)
+
+					case "graph_set_edge":
+						from, _ := params.Arguments["from"].(string)
+						to, _ := params.Arguments["to"].(string)
+						kind, _ := params.Arguments["kind"].(string)
+						props, _ := params.Arguments["properties"].(map[string]any)
+						outText, callErr = handleSetEdge(db, from, to, kind, props)
+
+					case "graph_delete_node":
+						id, _ := params.Arguments["id"].(string)
+						outText, callErr = handleDeleteNode(db, id)
+
+					case "graph_schema":
+						outText, callErr = handleSchema(dbRO)
+
+					default:
+						callErr = fmt.Errorf("unknown tool: %s", params.Name)
+					}
+
+					if callErr != nil {
+						sendResponse(JSONRPCResponse{
+							JSONRPC: "2.0",
+							ID:      req.ID,
+							Result: ToolResult{
+								IsError: true,
+								Content: []ToolContent{
+									{Type: "text", Text: callErr.Error()},
+								},
+							},
+						})
+					} else {
+						sendResponse(JSONRPCResponse{
+							JSONRPC: "2.0",
+							ID:      req.ID,
+							Result: ToolResult{
+								Content: []ToolContent{
+									{Type: "text", Text: outText},
+								},
+							},
+						})
+					}
+
+				default:
+					logMsg("Unhandled method: %s", req.Method)
+					if req.ID != nil {
+						sendResponse(JSONRPCResponse{
+							JSONRPC: "2.0",
+							ID:      req.ID,
+							Error: map[string]any{
+								"code":    -32601,
+								"message": fmt.Sprintf("Method not found: %s", req.Method),
+							},
+						})
+					}
+				}
+			}
+		}
 		if err != nil {
 			if err == io.EOF {
 				logMsg("Stdin EOF received, shutting down")
@@ -559,166 +784,6 @@ func main() {
 			}
 			logMsg("Error reading stdin: %v", err)
 			continue
-		}
-
-		trimmed := strings.TrimSpace(string(line))
-		if len(trimmed) == 0 {
-			continue
-		}
-
-		logMsg("IN: %s", trimmed)
-
-		var req JSONRPCRequest
-		if err := json.Unmarshal([]byte(trimmed), &req); err != nil {
-			logMsg("JSON unmarshal error: %v", err)
-			continue
-		}
-
-		switch req.Method {
-		case "initialize":
-			sendResponse(JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result: map[string]any{
-					"protocolVersion": "2024-11-05",
-					"capabilities": map[string]any{
-						"tools":     map[string]any{},
-						"resources": map[string]any{},
-						"prompts":   map[string]any{},
-					},
-					"serverInfo": map[string]any{
-						"name":    "cypher-graph-mcp",
-						"version": "1.0.0",
-					},
-				},
-			})
-
-		case "notifications/initialized":
-			logMsg("Client initialized notification received")
-
-		case "ping":
-			sendResponse(JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result:  map[string]any{},
-			})
-
-		case "resources/list":
-			sendResponse(JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result: map[string]any{
-					"resources": []any{},
-				},
-			})
-
-		case "prompts/list":
-			sendResponse(JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result: map[string]any{
-					"prompts": []any{},
-				},
-			})
-
-		case "logging/setLevel":
-			sendResponse(JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result:  map[string]any{},
-			})
-
-		case "tools/list":
-			sendResponse(JSONRPCResponse{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result: map[string]any{
-					"tools": serverTools,
-				},
-			})
-
-		case "tools/call":
-			var params ToolCallParams
-			if err := json.Unmarshal(req.Params, &params); err != nil {
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Error: map[string]any{
-						"code":    -32602,
-						"message": "Invalid params",
-					},
-				})
-				continue
-			}
-
-			var outText string
-			var callErr error
-
-			switch params.Name {
-			case "graph_query":
-				query, _ := params.Arguments["query"].(string)
-				queryParams, _ := params.Arguments["params"].(map[string]any)
-				outText, callErr = handleGraphQuery(dbRO, query, queryParams)
-
-			case "graph_set_node":
-				id, _ := params.Arguments["id"].(string)
-				kind, _ := params.Arguments["kind"].(string)
-				props, _ := params.Arguments["properties"].(map[string]any)
-				outText, callErr = handleSetNode(db, id, kind, props)
-
-			case "graph_set_edge":
-				from, _ := params.Arguments["from"].(string)
-				to, _ := params.Arguments["to"].(string)
-				kind, _ := params.Arguments["kind"].(string)
-				props, _ := params.Arguments["properties"].(map[string]any)
-				outText, callErr = handleSetEdge(db, from, to, kind, props)
-
-			case "graph_delete_node":
-				id, _ := params.Arguments["id"].(string)
-				outText, callErr = handleDeleteNode(db, id)
-
-			case "graph_schema":
-				outText, callErr = handleSchema(dbRO)
-
-			default:
-				callErr = fmt.Errorf("unknown tool: %s", params.Name)
-			}
-
-			if callErr != nil {
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: ToolResult{
-						IsError: true,
-						Content: []ToolContent{
-							{Type: "text", Text: callErr.Error()},
-						},
-					},
-				})
-			} else {
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: ToolResult{
-						Content: []ToolContent{
-							{Type: "text", Text: outText},
-						},
-					},
-				})
-			}
-
-		default:
-			logMsg("Unhandled method: %s", req.Method)
-			if req.ID != nil {
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Error: map[string]any{
-						"code":    -32601,
-						"message": fmt.Sprintf("Method not found: %s", req.Method),
-					},
-				})
-			}
 		}
 	}
 }
