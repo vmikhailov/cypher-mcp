@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"flag"
@@ -57,7 +58,7 @@ type ToolResult struct {
 var serverTools = []map[string]any{
 	{
 		"name":        "graph_query",
-		"description": "Execute an OpenCypher query against the knowledge graph and return structured results.",
+		"description": "Execute an OpenCypher query against the knowledge graph and return structured results. Supports variable-length paths like -[*1..3]-> or <-[*1..5]-. Unbounded [*] and [*1..] default to a 10-hop maximum. Always anchor at least one endpoint (with labels or properties) or use LIMIT to avoid full-graph scans (queries time out after 15s).",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -163,7 +164,7 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		}
 	}
 
-	schema := `
+	tables := `
 		CREATE TABLE IF NOT EXISTS nodes (
 			id TEXT PRIMARY KEY,
 			kind TEXT NOT NULL,
@@ -175,13 +176,31 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 			kind TEXT NOT NULL,
 			properties TEXT NOT NULL
 		);
+	`
+	if _, err := db.Exec(tables); err != nil {
+		return nil, fmt.Errorf("init tables: %w", err)
+	}
+
+	dedupEdges := `
+		DELETE FROM edges
+		WHERE rowid NOT IN (
+			SELECT min(rowid)
+			FROM edges
+			GROUP BY from_id, to_id, kind
+		);
+	`
+	if _, err := db.Exec(dedupEdges); err != nil {
+		return nil, fmt.Errorf("deduplicate edges: %w", err)
+	}
+
+	indices := `
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON edges(from_id, to_id, kind);
 		CREATE INDEX IF NOT EXISTS idx_edges_from_kind ON edges(from_id, kind);
 		CREATE INDEX IF NOT EXISTS idx_edges_to_kind ON edges(to_id, kind);
 		CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 	`
-	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("init schema: %w", err)
+	if _, err := db.Exec(indices); err != nil {
+		return nil, fmt.Errorf("init indices: %w", err)
 	}
 
 	return db, nil
@@ -325,8 +344,11 @@ func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]
 		sqlArgs = append(sqlArgs, sql.Named(k, v))
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	qStart := time.Now()
-	rows, err := db.Query(compiled.SQL, sqlArgs...)
+	rows, err := db.QueryContext(ctx, compiled.SQL, sqlArgs...)
 	if err != nil {
 		return "", fmt.Errorf("sql execution error (%s): %w", compiled.SQL, err)
 	}

@@ -12,6 +12,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/vmikhailov/cypher-sql-go v0.3.0 h1:PRov2kl5ywGmgqHucQZsL9X89bjPzsA1ECPo6/u4kM0=
 github.com/vmikhailov/cypher-sql-go v0.3.0/go.mod h1:H3GpV79/fHtxX8OJSPhMDQi4GgMxaEv8UEKLyXeg6hg=
+github.com/vmikhailov/cypher-sql-go v0.3.1 h1:kccK0hG5TQuUovRdiRW2sAE6VqOZ5J5RqiovXS1sm/E=
+github.com/vmikhailov/cypher-sql-go v0.3.1/go.mod h1:H3GpV79/fHtxX8OJSPhMDQi4GgMxaEv8UEKLyXeg6hg=
 golang.org/x/exp v0.0.0-20230315142452-642cacee5cc0 h1:pVgRXcIictcr+lBQIFeiwuwtDIs4eL21OuM9nyAADmo=
 golang.org/x/exp v0.0.0-20230315142452-642cacee5cc0/go.mod h1:CxIveKay+FTh1D0yPZemJVgC/95VzuuOLq5Qi4xnoYc=
 golang.org/x/mod v0.19.0 h1:fEdghXQSo20giMthA7cd28ZC+jts4amQ3YMXiP5oMQ8=

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"bufio"
 	"encoding/json"
 	"io"
@@ -596,5 +597,90 @@ func TestVariableLengthRelationships_Success(t *testing.T) {
 	}
 	if qRes.Results[0]["a.name"] != "Anton" || qRes.Results[0]["b.name"] != "Istanbul Apt" {
 		t.Fatalf("unexpected results: %+v", qRes.Results)
+	}
+}
+
+func TestInitDatabase_LegacyDuplicateEdgesCleaned(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-legacy-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "legacy.db")
+
+	// 1. Manually create tables WITHOUT unique index (simulating legacy v0.1.0 database)
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open raw db: %v", err)
+	}
+	rawSchema := `
+		CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, properties TEXT NOT NULL);
+		CREATE TABLE edges (from_id TEXT NOT NULL, to_id TEXT NOT NULL, kind TEXT NOT NULL, properties TEXT NOT NULL);
+		INSERT INTO nodes VALUES ('n1', 'Person', '{}'), ('n2', 'Person', '{}');
+		-- Insert duplicate edges
+		INSERT INTO edges VALUES ('n1', 'n2', 'KNOWS', '{"version": 1}');
+		INSERT INTO edges VALUES ('n1', 'n2', 'KNOWS', '{"version": 2}');
+	`
+	if _, err := rawDB.Exec(rawSchema); err != nil {
+		t.Fatalf("failed to seed legacy db: %v", err)
+	}
+	rawDB.Close()
+
+	// 2. Open via initDatabase: must NOT fail with "UNIQUE constraint failed" and must clean duplicates
+	migratedDB, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("initDatabase on legacy db with duplicates failed: %v", err)
+	}
+	defer migratedDB.Close()
+
+	var edgeCount int
+	if err := migratedDB.QueryRow("SELECT count(*) FROM edges WHERE from_id = 'n1' AND to_id = 'n2'").Scan(&edgeCount); err != nil {
+		t.Fatalf("query edge count failed: %v", err)
+	}
+	if edgeCount != 1 {
+		t.Fatalf("expected exactly 1 edge after deduplication, got: %d", edgeCount)
+	}
+
+	// Verify unique index was created and upserts succeed
+	_, err = handleSetEdge(migratedDB, "n1", "n2", "KNOWS", map[string]any{"version": 3})
+	if err != nil {
+		t.Fatalf("handleSetEdge on migrated db failed: %v", err)
+	}
+}
+
+func TestVariableLengthRelationships_UnanchoredRequiresLimit(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-unanchored-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "unanchored.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init database: %v", err)
+	}
+	defer db.Close()
+
+	dbRO, err := initRODatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init ro database: %v", err)
+	}
+	defer dbRO.Close()
+
+	// 1. Unanchored without LIMIT must fail
+	_, err = handleGraphQuery(dbRO, "MATCH (a)-[*1..2]->(b) RETURN a, b")
+	if err == nil {
+		t.Fatalf("expected unanchored varlen query without LIMIT to fail, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "LIMIT") {
+		t.Fatalf("expected error mentioning LIMIT, got: %v", err)
+	}
+
+	// 2. Unanchored with LIMIT must compile and execute successfully
+	_, err = handleGraphQuery(dbRO, "MATCH (a)-[*1..2]->(b) RETURN a, b LIMIT 10")
+	if err != nil {
+		t.Fatalf("expected unanchored varlen query with LIMIT 10 to succeed, got error: %v", err)
 	}
 }

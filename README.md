@@ -41,6 +41,12 @@ If you need a bigger graph for your organization, connect [`cypher-sql-go`](http
 | `graph_set_edge` | Mutation | Upserts a directed relationship between `from_id` and `to_id` with `kind` and `properties`. |
 | `graph_delete_node` | Mutation | Deletes a node and cascade-cleans all its incoming and outgoing relationships. |
 
+### Variable-Length Path Traversal
+`graph_query` supports recursive variable-length pattern matching:
+* **Syntax:** `-[*1..3]->` (outgoing 1 to 3 hops), `<-[*2..5]-` (incoming 2 to 5 hops), or `-[*]->` (arbitrary depth).
+* **10-Hop Default Cap:** Unbounded patterns like `-[*]->` and `-[*1..]->` automatically default to a maximum depth of 10 hops (`min=1, max=10`) to prevent runaway queries.
+* **Safety Guardrails:** All queries time out after 15 seconds. Always anchor at least one endpoint (e.g. `(p:Person {name: 'Alice'})-[*1..3]->(target)`); fully unanchored traversals (`MATCH (x)-[*1..2]->(y)`) strictly require an explicit `LIMIT` (and depth `<= 3`) to prevent full-graph combinatorial explosion.
+
 ---
 
 ## Quick Start
