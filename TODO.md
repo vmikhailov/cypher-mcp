@@ -26,6 +26,18 @@ This document tracks security, architectural, and data integrity improvements fo
 - **Status:** Completed
 - **Description:** Global MCP client configuration (`mcp_config.json`) points directly to `C:\Work\Personal\cypher-mcp\bin\cypher-mcp.exe`.
 
+### 1.6 Full-Text Search via SQLite FTS5 (`graph_search`)
+- **Status:** Completed
+- **Description:** Virtual table `nodes_fts` with FTS5 tokenization, triggers on `nodes` table, prefix and token search fallback (`AND` -> `OR`), and BM25 ranking.
+
+### 1.7 Atomic Batch Mutations (`graph_batch_upsert`)
+- **Status:** Completed
+- **Description:** Atomically upsert multiple nodes and edges in a single transaction with rollback on validation failure.
+
+### 1.8 Schema Governance & Validation (`graph_schema_define`)
+- **Status:** Completed
+- **Description:** Relational schema tables (`schema_kinds`, `schema_relations`), validation on `handleSetNode`, `handleSetEdge`, and `handleBatchUpsert`, and DDL tool `graph_schema_define`.
+
 ---
 
 ## 2. Checklist
@@ -35,3 +47,6 @@ This document tracks security, architectural, and data integrity improvements fo
 - [x] 3. Validate existence of `from` and `to` nodes before creating edges.
 - [x] 4. Add `UNIQUE(from_id, to_id, kind)` index on `edges`.
 - [x] 5. Update `mcp_config.json` binary path to `C:\Work\Personal\cypher-mcp\bin\cypher-mcp.exe`.
+- [x] 6. Implement SQLite FTS5 index and `graph_search` tool.
+- [x] 7. Implement atomic `graph_batch_upsert` tool.
+- [x] 8. Implement strict schema governance (`schema_kinds`, `schema_relations`, `graph_schema_define`).

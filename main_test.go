@@ -1,8 +1,8 @@
 package main
 
 import (
-	"database/sql"
 	"bufio"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"os"
@@ -261,7 +261,6 @@ func TestVariableLengthRelationships_ErrorReturned(t *testing.T) {
 		t.Fatalf("expected error mentioning 'variable-length', got: %v", err)
 	}
 }
-
 
 func TestHandleGraphQuery_WithParams(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "cypher-mcp-params-*")
@@ -682,5 +681,279 @@ func TestVariableLengthRelationships_UnanchoredRequiresLimit(t *testing.T) {
 	_, err = handleGraphQuery(dbRO, "MATCH (a)-[*1..2]->(b) RETURN a, b LIMIT 10")
 	if err != nil {
 		t.Fatalf("expected unanchored varlen query with LIMIT 10 to succeed, got error: %v", err)
+	}
+}
+
+func TestGraphSearch_FTS5(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-fts-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "fts.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	dbRO, err := initRODatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init ro db: %v", err)
+	}
+	defer dbRO.Close()
+
+	// Seed nodes
+	_, err = handleSetNode(db, "person:slava", "Person", map[string]any{
+		"name": "Vyacheslav Mikhailov",
+		"city": "München",
+		"note": "Lives on Franziska-Schmitz-Str. 6",
+	})
+	if err != nil {
+		t.Fatalf("set node 1 failed: %v", err)
+	}
+
+	_, err = handleSetNode(db, "car:m_ew_330", "Vehicle", map[string]any{
+		"brand":         "BMW",
+		"model":         "X3",
+		"license_plate": "M-EW 330",
+	})
+	if err != nil {
+		t.Fatalf("set node 2 failed: %v", err)
+	}
+
+	_, err = handleSetNode(db, "apt:franziska_6", "Apartment", map[string]any{
+		"address": "Franziska-Schmitz-Str. 6",
+		"city":    "München",
+		"plz":     80634,
+	})
+	if err != nil {
+		t.Fatalf("set node 3 failed: %v", err)
+	}
+
+	// 1. Search with umlaut / German characters: "München"
+	resStr, err := handleGraphSearch(dbRO, "München", "", 10)
+	if err != nil {
+		t.Fatalf("search München failed: %v", err)
+	}
+	var res1 struct {
+		Count   int                `json:"count"`
+		Results []SearchResultItem `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(resStr), &res1); err != nil {
+		t.Fatalf("unmarshal res1 failed: %v", err)
+	}
+	if res1.Count != 2 {
+		t.Fatalf("expected 2 results for München, got %d", res1.Count)
+	}
+
+	// 2. Search with punctuation and hyphen: "M-EW 330"
+	resStr, err = handleGraphSearch(dbRO, "M-EW 330", "", 10)
+	if err != nil {
+		t.Fatalf("search M-EW 330 failed: %v", err)
+	}
+	var res2 struct {
+		Count   int                `json:"count"`
+		Results []SearchResultItem `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(resStr), &res2); err != nil {
+		t.Fatalf("unmarshal res2 failed: %v", err)
+	}
+	if res2.Count != 1 || res2.Results[0].ID != "car:m_ew_330" {
+		t.Fatalf("expected car:m_ew_330, got %+v", res2)
+	}
+
+	// 3. Search with node ID format (colon): "person:slava"
+	resStr, err = handleGraphSearch(dbRO, "person:slava", "", 10)
+	if err != nil {
+		t.Fatalf("search person:slava failed: %v", err)
+	}
+	var res3 struct {
+		Count   int                `json:"count"`
+		Results []SearchResultItem `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(resStr), &res3); err != nil {
+		t.Fatalf("unmarshal res3 failed: %v", err)
+	}
+	if res3.Count != 1 || res3.Results[0].ID != "person:slava" {
+		t.Fatalf("expected person:slava, got %+v", res3)
+	}
+
+	// 4. Search with kind filter
+	resStr, err = handleGraphSearch(dbRO, "Franziska", "Apartment", 10)
+	if err != nil {
+		t.Fatalf("search with kind filter failed: %v", err)
+	}
+	var res4 struct {
+		Count   int                `json:"count"`
+		Results []SearchResultItem `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(resStr), &res4); err != nil {
+		t.Fatalf("unmarshal res4 failed: %v", err)
+	}
+	if res4.Count != 1 || res4.Results[0].ID != "apt:franziska_6" {
+		t.Fatalf("expected apt:franziska_6, got %+v", res4)
+	}
+}
+
+func TestGraphBatchUpsert_Atomicity(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-batch-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "batch.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Batch upsert nodes and edges together
+	nodes := []BatchNodeItem{
+		{ID: "person:timur", Kind: "Person", Properties: map[string]any{"name": "Timur"}},
+		{ID: "uni:kit", Kind: "University", Properties: map[string]any{"name": "KIT Karlsruhe"}},
+	}
+	edges := []BatchEdgeItem{
+		{From: "person:timur", To: "uni:kit", Kind: "STUDIES_AT", Properties: map[string]any{"since": 2026}},
+	}
+
+	msg, err := handleBatchUpsert(db, nodes, edges)
+	if err != nil {
+		t.Fatalf("batch upsert failed: %v", err)
+	}
+	if !strings.Contains(msg, "Successfully upserted 2 nodes and 1 edges") {
+		t.Fatalf("unexpected batch message: %s", msg)
+	}
+
+	// Verify both exist
+	var countNodes, countEdges int
+	_ = db.QueryRow("SELECT count(*) FROM nodes").Scan(&countNodes)
+	_ = db.QueryRow("SELECT count(*) FROM edges").Scan(&countEdges)
+	if countNodes != 2 || countEdges != 1 {
+		t.Fatalf("expected 2 nodes and 1 edge, got nodes=%d edges=%d", countNodes, countEdges)
+	}
+
+	// 2. Batch upsert failure should ROLL BACK all changes in the batch
+	badNodes := []BatchNodeItem{
+		{ID: "person:marat", Kind: "Person", Properties: map[string]any{"name": "Marat"}},
+	}
+	badEdges := []BatchEdgeItem{
+		{From: "person:marat", To: "non_existent_node", Kind: "CONNECTED_TO"},
+	}
+
+	_, err = handleBatchUpsert(db, badNodes, badEdges)
+	if err == nil {
+		t.Fatalf("expected batch upsert to fail due to dangling edge, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "target node 'non_existent_node' does not exist") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	// Verify person:marat was NOT saved (atomic rollback)
+	var maratExists bool
+	_ = db.QueryRow("SELECT EXISTS(SELECT 1 FROM nodes WHERE id = 'person:marat')").Scan(&maratExists)
+	if maratExists {
+		t.Fatalf("expected rollback: person:marat should NOT exist in database")
+	}
+}
+
+func TestSchemaGovernanceAndValidation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-schema-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "schema.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Initially schema is empty -> permissive
+	_, err = handleSetNode(db, "a:1", "AnyKind", nil)
+	if err != nil {
+		t.Fatalf("permissive node set failed: %v", err)
+	}
+
+	// 2. Define schema rules
+	_, err = handleSchemaDefine(db, "add_kind", "Person", "", "", "", "Human individual")
+	if err != nil {
+		t.Fatalf("add_kind Person failed: %v", err)
+	}
+	_, err = handleSchemaDefine(db, "add_kind", "Apartment", "", "", "", "Living residence")
+	if err != nil {
+		t.Fatalf("add_kind Apartment failed: %v", err)
+	}
+	_, err = handleSchemaDefine(db, "add_relation", "", "RENTS", "Person", "Apartment", "Lease agreement")
+	if err != nil {
+		t.Fatalf("add_relation RENTS failed: %v", err)
+	}
+
+	// 3. Now schema is enforced:
+	// a) Unregistered kind must fail
+	_, err = handleSetNode(db, "alien:1", "Alien", nil)
+	if err == nil {
+		t.Fatalf("expected set unknown kind Alien to fail, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "node kind 'Alien' is not registered") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	// b) Allowed kinds succeed
+	_, err = handleSetNode(db, "person:alice", "Person", map[string]any{"name": "Alice"})
+	if err != nil {
+		t.Fatalf("set Person node failed: %v", err)
+	}
+	_, err = handleSetNode(db, "apt:sunny", "Apartment", map[string]any{"city": "Munich"})
+	if err != nil {
+		t.Fatalf("set Apartment node failed: %v", err)
+	}
+
+	// c) Unregistered edge relation between Person and Apartment must fail
+	_, err = handleSetEdge(db, "person:alice", "apt:sunny", "OWNS_VEHICLE", nil)
+	if err == nil {
+		t.Fatalf("expected illegal relation OWNS_VEHICLE to fail, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "Allowed relations: [RENTS]") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	// d) Allowed edge relation succeeds
+	_, err = handleSetEdge(db, "person:alice", "apt:sunny", "RENTS", nil)
+	if err != nil {
+		t.Fatalf("set legal relation RENTS failed: %v", err)
+	}
+
+	// e) Batch upsert adheres to schema
+	badBatchNodes := []BatchNodeItem{
+		{ID: "person:bob", Kind: "Person"},
+		{ID: "apt:cosy", Kind: "Apartment"},
+	}
+	badBatchEdges := []BatchEdgeItem{
+		{From: "person:bob", To: "apt:cosy", Kind: "WORKS_AT"},
+	}
+	_, err = handleBatchUpsert(db, badBatchNodes, badBatchEdges)
+	if err == nil {
+		t.Fatalf("expected batch upsert with invalid schema relation to fail, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "Allowed relations: [RENTS]") {
+		t.Fatalf("unexpected batch schema error: %v", err)
+	}
+
+	// 4. Verify handleSchema returns active rules
+	schemaStr, err := handleSchema(db)
+	if err != nil {
+		t.Fatalf("handleSchema failed: %v", err)
+	}
+	if !strings.Contains(schemaStr, "\"schema_enforced\": true") {
+		t.Fatalf("expected schema_enforced to be true, got: %s", schemaStr)
+	}
+	if !strings.Contains(schemaStr, "RENTS") || !strings.Contains(schemaStr, "Person") {
+		t.Fatalf("expected schema to contain RENTS and Person, got: %s", schemaStr)
 	}
 }

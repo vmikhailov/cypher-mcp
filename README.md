@@ -31,14 +31,17 @@ If you need a bigger graph for your organization, connect [`cypher-sql-go`](http
 
 ## MCP Tools
 
-`cypher-mcp` exposes 5 standard MCP tools via JSON-RPC 2.0 (stdio):
+`cypher-mcp` exposes 8 standard MCP tools via JSON-RPC 2.0 (stdio):
 
 | Tool | Mode | Description |
 | :--- | :--- | :--- |
 | `graph_query` | Read-only | Transpiles and executes OpenCypher against SQLite. Returns JSON records with compile and execution timing metrics. |
-| `graph_schema` | Read-only | Summarizes graph topology: counts of nodes and edges by kind, and top property keys. |
-| `graph_set_node` | Mutation | Upserts a node by unique `id`, `kind`, and dynamic JSON `properties`. |
-| `graph_set_edge` | Mutation | Upserts a directed relationship between `from_id` and `to_id` with `kind` and `properties`. |
+| `graph_search` | Read-only | Full-text search (SQLite FTS5) across node IDs and JSON property values. Finds entry-point nodes before path traversals. |
+| `graph_batch_upsert` | Mutation | Atomically upserts multiple nodes and/or edges in a single ACID transaction with schema validation. |
+| `graph_schema` | Read-only | Summarizes graph topology: counts of nodes and edges by kind, total graph volume, and active schema rules. |
+| `graph_schema_define` | DDL / Governance | Defines or removes allowed node kinds and directed relationships in the taxonomy schema. |
+| `graph_set_node` | Mutation | Upserts a node by unique `id`, `kind`, and dynamic JSON `properties`. Validates against schema if active. |
+| `graph_set_edge` | Mutation | Upserts a directed relationship between `from_id` and `to_id` with `kind` and `properties`. Validates against schema if active. |
 | `graph_delete_node` | Mutation | Deletes a node and cascade-cleans all its incoming and outgoing relationships. |
 
 ### Variable-Length Path Traversal
