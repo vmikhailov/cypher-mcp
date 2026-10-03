@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -668,19 +670,28 @@ func TestVariableLengthRelationships_UnanchoredRequiresLimit(t *testing.T) {
 	}
 	defer dbRO.Close()
 
-	// 1. Unanchored without LIMIT must fail
+	// 1. Unanchored varlen query must fail requiring an anchor
 	_, err = handleGraphQuery(dbRO, "MATCH (a)-[*1..2]->(b) RETURN a, b")
 	if err == nil {
 		t.Fatalf("expected unanchored varlen query without LIMIT to fail, but succeeded")
 	}
-	if !strings.Contains(err.Error(), "LIMIT") {
-		t.Fatalf("expected error mentioning LIMIT, got: %v", err)
+	if !strings.Contains(err.Error(), "anchored") {
+		t.Fatalf("expected error mentioning anchored, got: %v", err)
 	}
 
-	// 2. Unanchored with LIMIT must compile and execute successfully
+	// 2. Unanchored even with LIMIT must fail requiring an anchor to prevent recursion explosion
 	_, err = handleGraphQuery(dbRO, "MATCH (a)-[*1..2]->(b) RETURN a, b LIMIT 10")
+	if err == nil {
+		t.Fatalf("expected unanchored varlen query with LIMIT 10 to fail, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "anchored") {
+		t.Fatalf("expected error mentioning anchored, got: %v", err)
+	}
+
+	// 3. Anchored with label must succeed
+	_, err = handleGraphQuery(dbRO, "MATCH (a:Person)-[*1..2]->(b) RETURN a, b LIMIT 10")
 	if err != nil {
-		t.Fatalf("expected unanchored varlen query with LIMIT 10 to succeed, got error: %v", err)
+		t.Fatalf("expected anchored varlen query to succeed, got error: %v", err)
 	}
 }
 
@@ -706,12 +717,22 @@ func TestGraphSearch_FTS5(t *testing.T) {
 
 	// Seed nodes
 	_, err = handleSetNode(db, "person:slava", "Person", map[string]any{
-		"name": "Vyacheslav Mikhailov",
-		"city": "München",
-		"note": "Lives on Franziska-Schmitz-Str. 6",
+		"name":    "Vyacheslav Mikhailov",
+		"name_ru": "Вячеслав Михайлов",
+		"city":    "München",
+		"note":    "Lives on Franziska-Schmitz-Str. 6",
 	})
 	if err != nil {
 		t.Fatalf("set node 1 failed: %v", err)
+	}
+
+	_, err = handleSetNode(db, "person:katya", "Person", map[string]any{
+		"name":    "Ekaterina Mikhailova",
+		"name_ru": "Екатерина Михайлова",
+		"city":    "München",
+	})
+	if err != nil {
+		t.Fatalf("set node 2 failed: %v", err)
 	}
 
 	_, err = handleSetNode(db, "car:m_ew_330", "Vehicle", map[string]any{
@@ -720,7 +741,7 @@ func TestGraphSearch_FTS5(t *testing.T) {
 		"license_plate": "M-EW 330",
 	})
 	if err != nil {
-		t.Fatalf("set node 2 failed: %v", err)
+		t.Fatalf("set node 3 failed: %v", err)
 	}
 
 	_, err = handleSetNode(db, "apt:franziska_6", "Apartment", map[string]any{
@@ -729,11 +750,27 @@ func TestGraphSearch_FTS5(t *testing.T) {
 		"plz":     80634,
 	})
 	if err != nil {
-		t.Fatalf("set node 3 failed: %v", err)
+		t.Fatalf("set node 4 failed: %v", err)
 	}
 
-	// 1. Search with umlaut / German characters: "München"
-	resStr, err := handleGraphSearch(dbRO, "München", "", 10)
+	// 1. Trigram substring matching in Russian: "Михайлов" should match BOTH Mikhailov and Mikhailova
+	resStr, err := handleGraphSearch(dbRO, "Михайлов", "", 10)
+	if err != nil {
+		t.Fatalf("search Михайлов failed: %v", err)
+	}
+	var resM struct {
+		Count   int                `json:"count"`
+		Results []SearchResultItem `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(resStr), &resM); err != nil {
+		t.Fatalf("unmarshal resM failed: %v", err)
+	}
+	if resM.Count != 2 {
+		t.Fatalf("expected 2 results for Михайлов (both Mikhailov and Mikhailova via trigram), got %d: %+v", resM.Count, resM.Results)
+	}
+
+	// 2. Search with umlaut / German characters: "München"
+	resStr, err = handleGraphSearch(dbRO, "München", "", 10)
 	if err != nil {
 		t.Fatalf("search München failed: %v", err)
 	}
@@ -744,56 +781,33 @@ func TestGraphSearch_FTS5(t *testing.T) {
 	if err := json.Unmarshal([]byte(resStr), &res1); err != nil {
 		t.Fatalf("unmarshal res1 failed: %v", err)
 	}
-	if res1.Count != 2 {
-		t.Fatalf("expected 2 results for München, got %d", res1.Count)
+	if res1.Count != 3 {
+		t.Fatalf("expected 3 results for München, got %d", res1.Count)
 	}
 
-	// 2. Search with punctuation and hyphen: "M-EW 330"
-	resStr, err = handleGraphSearch(dbRO, "M-EW 330", "", 10)
+	// 3. Short search (< 3 chars): "X3"
+	resStr, err = handleGraphSearch(dbRO, "X3", "", 10)
 	if err != nil {
-		t.Fatalf("search M-EW 330 failed: %v", err)
+		t.Fatalf("search X3 failed: %v", err)
 	}
-	var res2 struct {
+	var resShort struct {
 		Count   int                `json:"count"`
 		Results []SearchResultItem `json:"results"`
 	}
-	if err := json.Unmarshal([]byte(resStr), &res2); err != nil {
-		t.Fatalf("unmarshal res2 failed: %v", err)
+	if err := json.Unmarshal([]byte(resStr), &resShort); err != nil {
+		t.Fatalf("unmarshal resShort failed: %v", err)
 	}
-	if res2.Count != 1 || res2.Results[0].ID != "car:m_ew_330" {
-		t.Fatalf("expected car:m_ew_330, got %+v", res2)
-	}
-
-	// 3. Search with node ID format (colon): "person:slava"
-	resStr, err = handleGraphSearch(dbRO, "person:slava", "", 10)
-	if err != nil {
-		t.Fatalf("search person:slava failed: %v", err)
-	}
-	var res3 struct {
-		Count   int                `json:"count"`
-		Results []SearchResultItem `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(resStr), &res3); err != nil {
-		t.Fatalf("unmarshal res3 failed: %v", err)
-	}
-	if res3.Count != 1 || res3.Results[0].ID != "person:slava" {
-		t.Fatalf("expected person:slava, got %+v", res3)
+	if resShort.Count != 1 || resShort.Results[0].ID != "car:m_ew_330" {
+		t.Fatalf("expected car:m_ew_330 for X3, got %+v", resShort)
 	}
 
-	// 4. Search with kind filter
-	resStr, err = handleGraphSearch(dbRO, "Franziska", "Apartment", 10)
+	// 4. Empty search results: must return [] (never null in JSON)
+	resStr, err = handleGraphSearch(dbRO, "NonExistentWord12345", "", 10)
 	if err != nil {
-		t.Fatalf("search with kind filter failed: %v", err)
+		t.Fatalf("search non-existent failed: %v", err)
 	}
-	var res4 struct {
-		Count   int                `json:"count"`
-		Results []SearchResultItem `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(resStr), &res4); err != nil {
-		t.Fatalf("unmarshal res4 failed: %v", err)
-	}
-	if res4.Count != 1 || res4.Results[0].ID != "apt:franziska_6" {
-		t.Fatalf("expected apt:franziska_6, got %+v", res4)
+	if !strings.Contains(resStr, `"results": []`) {
+		t.Fatalf("expected empty array '\"results\": []', got: %s", resStr)
 	}
 }
 
@@ -880,21 +894,30 @@ func TestSchemaGovernanceAndValidation(t *testing.T) {
 		t.Fatalf("permissive node set failed: %v", err)
 	}
 
-	// 2. Define schema rules
-	_, err = handleSchemaDefine(db, "add_kind", "Person", "", "", "", "Human individual")
+	// 2. Mutation without allowSchemaEdit=true must fail (read-only mode)
+	_, err = handleSchemaDefine(db, "add_kind", "Person", "", "", "", "Human individual", false)
+	if err == nil {
+		t.Fatalf("expected schema edit to fail without allowSchemaEdit, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "schema modification is locked") {
+		t.Fatalf("unexpected lock error: %v", err)
+	}
+
+	// 3. Define schema rules with allowSchemaEdit=true
+	_, err = handleSchemaDefine(db, "add_kind", "Person", "", "", "", "Human individual", true)
 	if err != nil {
 		t.Fatalf("add_kind Person failed: %v", err)
 	}
-	_, err = handleSchemaDefine(db, "add_kind", "Apartment", "", "", "", "Living residence")
+	_, err = handleSchemaDefine(db, "add_kind", "Apartment", "", "", "", "Living residence", true)
 	if err != nil {
 		t.Fatalf("add_kind Apartment failed: %v", err)
 	}
-	_, err = handleSchemaDefine(db, "add_relation", "", "RENTS", "Person", "Apartment", "Lease agreement")
+	_, err = handleSchemaDefine(db, "add_relation", "", "RENTS", "Person", "Apartment", "Lease agreement", true)
 	if err != nil {
 		t.Fatalf("add_relation RENTS failed: %v", err)
 	}
 
-	// 3. Now schema is enforced:
+	// 4. Now schema is enforced:
 	// a) Unregistered kind must fail
 	_, err = handleSetNode(db, "alien:1", "Alien", nil)
 	if err == nil {
@@ -945,15 +968,433 @@ func TestSchemaGovernanceAndValidation(t *testing.T) {
 		t.Fatalf("unexpected batch schema error: %v", err)
 	}
 
-	// 4. Verify handleSchema returns active rules
+	// 5. Verify handleSchema returns active rules
 	schemaStr, err := handleSchema(db)
 	if err != nil {
 		t.Fatalf("handleSchema failed: %v", err)
 	}
-	if !strings.Contains(schemaStr, "\"schema_enforced\": true") {
+	if !strings.Contains(schemaStr, `"schema_enforced": true`) {
 		t.Fatalf("expected schema_enforced to be true, got: %s", schemaStr)
 	}
 	if !strings.Contains(schemaStr, "RENTS") || !strings.Contains(schemaStr, "Person") {
 		t.Fatalf("expected schema to contain RENTS and Person, got: %s", schemaStr)
+	}
+}
+
+func TestSchema_V030_AllFixes(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-v030-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test_v030.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	dbRO, err := initRODatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init ro db: %v", err)
+	}
+	defer dbRO.Close()
+
+	// 1. P1: Identifier validation rules (only ASCII alphanumeric + underscore)
+	_, err = handleSchemaDefine(db, "add_kind", "Проект", "", "", "", "", true)
+	if err == nil || !strings.Contains(err.Error(), "alphanumeric") {
+		t.Fatalf("expected non-ASCII identifier 'Проект' to be rejected, got: %v", err)
+	}
+	_, err = handleSchemaDefine(db, "add_kind", "my-kind", "", "", "", "", true)
+	if err == nil || !strings.Contains(err.Error(), "alphanumeric") {
+		t.Fatalf("expected hyphenated identifier 'my-kind' to be rejected, got: %v", err)
+	}
+
+	// 2. P1: Case-insensitive uniqueness for kind
+	_, err = handleSchemaDefine(db, "add_kind", "Person", "", "", "", "Person kind", true)
+	if err != nil {
+		t.Fatalf("failed to add Person: %v", err)
+	}
+	_, err = handleSchemaDefine(db, "add_kind", "person", "", "", "", "Duplicate person kind", true)
+	if err == nil || !strings.Contains(err.Error(), "case-insensitive uniqueness required") {
+		t.Fatalf("expected duplicate case-insensitive kind 'person' to fail, got: %v", err)
+	}
+
+	// Add second kind and relation
+	_, err = handleSchemaDefine(db, "add_kind", "Company", "", "", "", "Company kind", true)
+	if err != nil {
+		t.Fatalf("failed to add Company: %v", err)
+	}
+	_, err = handleSchemaDefine(db, "add_relation", "", "WORKS_FOR", "Person", "Company", "Employment", true)
+	if err != nil {
+		t.Fatalf("failed to add relation: %v", err)
+	}
+
+	// Insert nodes and edges
+	_, err = handleSetNode(db, "p1", "Person", map[string]any{"name": "Вячеслав Михайлов", "role": "engineer"})
+	if err != nil {
+		t.Fatalf("set node p1: %v", err)
+	}
+	_, err = handleSetNode(db, "c1", "Company", map[string]any{"title": "Tech Corp", "city": "Munich"})
+	if err != nil {
+		t.Fatalf("set node c1: %v", err)
+	}
+	_, err = handleSetEdge(db, "p1", "c1", "WORKS_FOR", map[string]any{"since": 2020})
+	if err != nil {
+		t.Fatalf("set edge: %v", err)
+	}
+
+	// 3. P0: Cyrillic text in Cypher queries works properly
+	cyrRes, err := handleGraphQuery(dbRO, "MATCH (p:Person {name: 'Вячеслав Михайлов'}) RETURN p.role AS role, p.name AS name")
+	if err != nil {
+		t.Fatalf("cyrillic query failed: %v", err)
+	}
+	if !strings.Contains(cyrRes, "Вячеслав Михайлов") || !strings.Contains(cyrRes, "engineer") {
+		t.Fatalf("unexpected cyrillic query response: %s", cyrRes)
+	}
+
+	// 4. P2: graph_search does NOT find by JSON property keys (e.g. searching 'name' should not match p1 whose property name is 'name')
+	searchKeyRes, err := handleGraphSearch(dbRO, "role", "", 10)
+	if err != nil {
+		t.Fatalf("search 'role' failed: %v", err)
+	}
+	// 'role' is a key in p1, but its value is 'engineer'. If searching 'role', it should not find p1 unless 'role' appears in value or ID.
+	if strings.Contains(searchKeyRes, `"p1"`) {
+		t.Fatalf("search for JSON key 'role' incorrectly matched node p1: %s", searchKeyRes)
+	}
+
+	// Searching for actual value 'Михайлов' should find p1
+	searchValRes, err := handleGraphSearch(dbRO, "Михайлов", "", 10)
+	if err != nil {
+		t.Fatalf("search 'Михайлова' failed: %v", err)
+	}
+	if !strings.Contains(searchValRes, `"p1"`) {
+		t.Fatalf("expected trigram search 'Михайлова' to match 'Михайлов' in p1, got: %s", searchValRes)
+	}
+
+	// 5. P2: Empty search returns results: []
+	emptySearchRes, err := handleGraphSearch(dbRO, "NonExistentTermXYZ999", "", 10)
+	if err != nil {
+		t.Fatalf("empty search failed: %v", err)
+	}
+	if !strings.Contains(emptySearchRes, `"results": []`) {
+		t.Fatalf("expected empty search to return 'results: []', got: %s", emptySearchRes)
+	}
+
+	// 6. P1: remove_kind without cascade or migrate_to must reject and state counts
+	_, err = handleSchemaDefine(db, "remove_kind", "Person", "", "", "", "", SchemaDefineOptions{AllowSchemaEdit: true})
+	if err == nil || !strings.Contains(err.Error(), "1 nodes (and 1 related edges) exist") {
+		t.Fatalf("expected remove_kind to reject with count info, got: %v", err)
+	}
+
+	// 7. P1: rename_kind changes schema and node kinds in one transaction
+	_, err = handleSchemaDefine(db, "rename_kind", "Person", "", "", "", "", SchemaDefineOptions{AllowSchemaEdit: true, NewKind: "Human"})
+	if err != nil {
+		t.Fatalf("rename_kind failed: %v", err)
+	}
+	var nodeKind string
+	err = db.QueryRow("SELECT kind FROM nodes WHERE id = 'p1'").Scan(&nodeKind)
+	if err != nil || nodeKind != "Human" {
+		t.Fatalf("expected node p1 kind to be 'Human', got: %s (err: %v)", nodeKind, err)
+	}
+
+	// 8. P1: remove_relation without cascade/migrate rejects when edges exist
+	_, err = handleSchemaDefine(db, "remove_relation", "", "WORKS_FOR", "Human", "Company", "", SchemaDefineOptions{AllowSchemaEdit: true})
+	if err == nil || !strings.Contains(err.Error(), "1 edges exist") {
+		t.Fatalf("expected remove_relation to reject with count, got: %v", err)
+	}
+
+	// 9. P1: rename_relation renames relation in schema and edges
+	_, err = handleSchemaDefine(db, "rename_relation", "", "WORKS_FOR", "Human", "Company", "", SchemaDefineOptions{AllowSchemaEdit: true, NewRelation: "EMPLOYED_BY"})
+	if err != nil {
+		t.Fatalf("rename_relation failed: %v", err)
+	}
+	var edgeKind string
+	err = db.QueryRow("SELECT kind FROM edges WHERE from_id = 'p1' AND to_id = 'c1'").Scan(&edgeKind)
+	if err != nil || edgeKind != "EMPLOYED_BY" {
+		t.Fatalf("expected edge kind to be 'EMPLOYED_BY', got: %s (err: %v)", edgeKind, err)
+	}
+
+	// 10. P1: remove_kind with migrate_to
+	_, err = handleSchemaDefine(db, "add_kind", "Individual", "", "", "", "Migrate target", true)
+	if err != nil {
+		t.Fatalf("add_kind Individual: %v", err)
+	}
+	_, err = handleSchemaDefine(db, "remove_kind", "Human", "", "", "", "", SchemaDefineOptions{AllowSchemaEdit: true, MigrateTo: "Individual"})
+	if err != nil {
+		t.Fatalf("remove_kind with migrate_to failed: %v", err)
+	}
+	err = db.QueryRow("SELECT kind FROM nodes WHERE id = 'p1'").Scan(&nodeKind)
+	if err != nil || nodeKind != "Individual" {
+		t.Fatalf("expected node p1 kind to be 'Individual', got: %s (err: %v)", nodeKind, err)
+	}
+
+	// 11. P1: remove_kind with cascade=true removes remaining node and edges
+	_, err = handleSchemaDefine(db, "remove_kind", "Individual", "", "", "", "", SchemaDefineOptions{AllowSchemaEdit: true, Cascade: true})
+	if err != nil {
+		t.Fatalf("remove_kind with cascade failed: %v", err)
+	}
+	var p1Exists bool
+	_ = db.QueryRow("SELECT EXISTS(SELECT 1 FROM nodes WHERE id = 'p1')").Scan(&p1Exists)
+	if p1Exists {
+		t.Fatalf("expected node p1 to be deleted by cascade")
+	}
+
+	// 12. P2: schema changelog has entries and appears in handleSchema
+	schemaInfo, err := handleSchema(db)
+	if err != nil {
+		t.Fatalf("handleSchema failed: %v", err)
+	}
+	if !strings.Contains(schemaInfo, `"changelog": [`) || !strings.Contains(schemaInfo, "rename_kind") {
+		t.Fatalf("expected schema to include changelog entries, got: %s", schemaInfo)
+	}
+}
+
+func TestHandleGraphQuery_RowsErrHandling(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-rowserr-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test_rowserr.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	// Seed several nodes
+	for i := 0; i < 50; i++ {
+		_, err := handleSetNode(db, fmt.Sprintf("n%d", i), "Item", map[string]any{"val": i})
+		if err != nil {
+			t.Fatalf("seed node %d failed: %v", i, err)
+		}
+	}
+
+	// Create an already-cancelled or instantly expiring context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err = handleGraphQueryContext(ctx, db, "MATCH (n:Item) RETURN n.val AS val")
+	if err == nil {
+		t.Fatalf("expected query with cancelled context to fail, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "context canceled") && !strings.Contains(err.Error(), "row iteration error") {
+		t.Fatalf("expected error mentioning context canceled or row iteration error, got: %v", err)
+	}
+}
+
+func TestHandleGraphQuery_RowLimit(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-limit-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test_limit.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	for i := 0; i < 25; i++ {
+		_, err := handleSetNode(db, fmt.Sprintf("node_%02d", i), "Item", map[string]any{"val": i})
+		if err != nil {
+			t.Fatalf("seed node %d failed: %v", i, err)
+		}
+	}
+
+	// 1. Query with rowLimit = 10
+	resJSON, err := handleGraphQuery(db, "MATCH (n:Item) RETURN n.id AS id ORDER BY id", nil, 10)
+	if err != nil {
+		t.Fatalf("handleGraphQuery with limit failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(resJSON), &res); err != nil {
+		t.Fatalf("unmarshal result failed: %v", err)
+	}
+	if int(res["count"].(float64)) != 10 {
+		t.Fatalf("expected count 10, got %v", res["count"])
+	}
+	if res["truncated"] != true {
+		t.Fatalf("expected truncated to be true, got %v", res["truncated"])
+	}
+	if _, ok := res["warning"].(string); !ok {
+		t.Fatalf("expected warning message when truncated")
+	}
+
+	// 2. Query with default limit (should return all 25)
+	resJSON2, err := handleGraphQuery(db, "MATCH (n:Item) RETURN n.id AS id ORDER BY id")
+	if err != nil {
+		t.Fatalf("handleGraphQuery with default limit failed: %v", err)
+	}
+	var res2 map[string]any
+	if err := json.Unmarshal([]byte(resJSON2), &res2); err != nil {
+		t.Fatalf("unmarshal result 2 failed: %v", err)
+	}
+	if int(res2["count"].(float64)) != 25 {
+		t.Fatalf("expected count 25, got %v", res2["count"])
+	}
+	if res2["truncated"] == true {
+		t.Fatalf("expected truncated to be false/nil for 25 rows under default limit")
+	}
+}
+
+func TestHandleSetNode_MergeDefaultAndOverwrite(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-merge-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test_merge.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Initial node creation
+	_, err = handleSetNode(db, "srv1", "Server", map[string]any{"cpu": 4, "ram": 16})
+	if err != nil {
+		t.Fatalf("create node failed: %v", err)
+	}
+
+	// 2. Upsert with only owner (default merge = true)
+	_, err = handleSetNode(db, "srv1", "Server", map[string]any{"owner": "Dmitry"})
+	if err != nil {
+		t.Fatalf("merge node failed: %v", err)
+	}
+
+	var propsStr string
+	err = db.QueryRow("SELECT properties FROM nodes WHERE id = 'srv1'").Scan(&propsStr)
+	if err != nil {
+		t.Fatalf("select node properties failed: %v", err)
+	}
+	var props map[string]any
+	_ = json.Unmarshal([]byte(propsStr), &props)
+
+	if props["cpu"] != float64(4) || props["ram"] != float64(16) || props["owner"] != "Dmitry" {
+		t.Fatalf("expected merged properties (cpu:4, ram:16, owner:Dmitry), got: %v", props)
+	}
+
+	// 3. Upsert with merge = false (complete overwrite)
+	_, err = handleSetNode(db, "srv1", "Server", map[string]any{"owner": "Alice"}, false, false)
+	if err != nil {
+		t.Fatalf("overwrite node failed: %v", err)
+	}
+
+	err = db.QueryRow("SELECT properties FROM nodes WHERE id = 'srv1'").Scan(&propsStr)
+	if err != nil {
+		t.Fatalf("select node properties failed: %v", err)
+	}
+	var propsOverwrite map[string]any
+	_ = json.Unmarshal([]byte(propsStr), &propsOverwrite)
+
+	if _, exists := propsOverwrite["cpu"]; exists {
+		t.Fatalf("expected 'cpu' to be overwritten/removed when merge=false, got: %v", propsOverwrite)
+	}
+	if propsOverwrite["owner"] != "Alice" {
+		t.Fatalf("expected owner 'Alice', got: %v", propsOverwrite)
+	}
+
+	// 4. Edge merge test
+	_, err = handleSetNode(db, "srv2", "Server", map[string]any{})
+	if err != nil {
+		t.Fatalf("create srv2 failed: %v", err)
+	}
+	_, err = handleSetEdge(db, "srv1", "srv2", "CONNECTS_TO", map[string]any{"port": 8080})
+	if err != nil {
+		t.Fatalf("create edge failed: %v", err)
+	}
+
+	// Merge edge properties
+	_, err = handleSetEdge(db, "srv1", "srv2", "CONNECTS_TO", map[string]any{"protocol": "https"})
+	if err != nil {
+		t.Fatalf("merge edge failed: %v", err)
+	}
+
+	var edgePropsStr string
+	err = db.QueryRow("SELECT properties FROM edges WHERE from_id = 'srv1' AND to_id = 'srv2' AND kind = 'CONNECTS_TO'").Scan(&edgePropsStr)
+	if err != nil {
+		t.Fatalf("select edge properties failed: %v", err)
+	}
+	var edgeProps map[string]any
+	_ = json.Unmarshal([]byte(edgePropsStr), &edgeProps)
+
+	if edgeProps["port"] != float64(8080) || edgeProps["protocol"] != "https" {
+		t.Fatalf("expected merged edge properties (port:8080, protocol:https), got: %v", edgeProps)
+	}
+}
+
+func TestHandleSetNode_KindChangeRelationshipValidation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-kindval-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test_kindval.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer db.Close()
+
+	// Setup schema
+	opts := SchemaDefineOptions{AllowSchemaEdit: true}
+	handleSchemaDefine(db, "add_kind", "Person", "", "", "", "Person entity", opts)
+	handleSchemaDefine(db, "add_kind", "Company", "", "", "", "Company entity", opts)
+	handleSchemaDefine(db, "add_kind", "Pet", "", "", "", "Pet entity", opts)
+	handleSchemaDefine(db, "add_relation", "", "WORKS_FOR", "Person", "Company", "Employment", opts)
+
+	// Create nodes & edge
+	_, err = handleSetNode(db, "alice", "Person", map[string]any{"name": "Alice"}, true)
+	if err != nil {
+		t.Fatalf("create alice failed: %v", err)
+	}
+	_, err = handleSetNode(db, "acme", "Company", map[string]any{"name": "Acme Corp"}, true)
+	if err != nil {
+		t.Fatalf("create acme failed: %v", err)
+	}
+	_, err = handleSetEdge(db, "alice", "acme", "WORKS_FOR", nil, true)
+	if err != nil {
+		t.Fatalf("create edge failed: %v", err)
+	}
+
+	// 1. Changing alice's kind to Pet should fail because Pet cannot have outgoing WORKS_FOR to Company
+	_, err = handleSetNode(db, "alice", "Pet", map[string]any{"name": "Alice"}, true)
+	if err == nil {
+		t.Fatalf("expected changing alice to Pet to fail relationship validation, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "outgoing relationship (:Pet)-[:WORKS_FOR]->(:Company) is not permitted") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	// 2. Changing acme's kind to Pet should fail because Person cannot have incoming WORKS_FOR to Pet
+	_, err = handleSetNode(db, "acme", "Pet", map[string]any{"name": "Acme Corp"}, true)
+	if err == nil {
+		t.Fatalf("expected changing acme to Pet to fail relationship validation, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "incoming relationship (:Person)-[:WORKS_FOR]->(:Pet) is not permitted") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	// 3. Batch upsert kind change should also be validated
+	_, err = handleBatchUpsert(db, []BatchNodeItem{{ID: "alice", Kind: "Pet"}}, nil, true)
+	if err == nil {
+		t.Fatalf("expected batch upsert kind change to fail, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "outgoing relationship (:Pet)-[:WORKS_FOR]->(:Company) is not permitted") {
+		t.Fatalf("unexpected error message in batch upsert: %v", err)
+	}
+
+	// 4. Updating properties without kind change should succeed
+	_, err = handleSetNode(db, "alice", "Person", map[string]any{"role": "Lead"}, true)
+	if err != nil {
+		t.Fatalf("updating alice properties with same kind failed: %v", err)
 	}
 }

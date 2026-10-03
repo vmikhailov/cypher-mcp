@@ -72,6 +72,7 @@ type BatchEdgeItem struct {
 type dbOrTx interface {
 	QueryRow(query string, args ...any) *sql.Row
 	Query(query string, args ...any) (*sql.Rows, error)
+	Exec(query string, args ...any) (sql.Result, error)
 }
 
 var serverTools = []map[string]any{
@@ -89,19 +90,23 @@ var serverTools = []map[string]any{
 					"type":        "object",
 					"description": "Optional parameters to pass to the query (e.g., {\"name\": \"Alice\"})",
 				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Optional maximum number of rows to return (default: server limit of 1000, 0 = unlimited/default)",
+				},
 			},
 			"required": []string{"query"},
 		},
 	},
 	{
 		"name":        "graph_search",
-		"description": "Full-text keyword search across nodes using SQLite FTS5. Searches node IDs and JSON property values (names, addresses, license plates, notes, etc.). Use this to find entry-point nodes before path traversals.",
+		"description": "Full-text keyword and substring search across nodes using SQLite FTS5 (trigram-indexed). Searches node IDs and JSON property values (names, addresses, notes, etc.) across languages without strict syntax restrictions. Returns an empty array if no match.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Keywords to search for (e.g. 'Franziska', 'München', 'BMW M-EW 330', 'KIT Timur')",
+					"description": "Keywords or substrings to search for (e.g. 'Франциска', 'Михайлов', 'BMW', 'M-EW 330', 'KIT Timur')",
 				},
 				"kind": map[string]any{
 					"type":        "string",
@@ -174,7 +179,7 @@ var serverTools = []map[string]any{
 	},
 	{
 		"name":        "graph_set_node",
-		"description": "Create or update a graph node with a unique ID, kind/label, and properties.",
+		"description": "Create or update a graph node with a unique ID, kind/label, and properties. Properties are merged with existing properties by default; set merge=false to overwrite completely.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -190,13 +195,17 @@ var serverTools = []map[string]any{
 					"type":        "object",
 					"description": "Key-value attributes for the node",
 				},
+				"merge": map[string]any{
+					"type":        "boolean",
+					"description": "If true (default), merges properties with existing properties. If false, completely overwrites properties.",
+				},
 			},
 			"required": []string{"id", "kind"},
 		},
 	},
 	{
 		"name":        "graph_set_edge",
-		"description": "Create or update a directed relationship/edge between two nodes.",
+		"description": "Create or update a directed relationship/edge between two nodes. Properties are merged with existing properties by default; set merge=false to overwrite completely.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -215,6 +224,10 @@ var serverTools = []map[string]any{
 				"properties": map[string]any{
 					"type":        "object",
 					"description": "Optional attributes for the edge",
+				},
+				"merge": map[string]any{
+					"type":        "boolean",
+					"description": "If true (default), merges properties with existing properties. If false, completely overwrites properties.",
 				},
 			},
 			"required": []string{"from", "to", "kind"},
@@ -244,30 +257,46 @@ var serverTools = []map[string]any{
 	},
 	{
 		"name":        "graph_schema_define",
-		"description": "Governance tool for defining or modifying allowed node kinds and relationship rules in the knowledge graph schema.",
+		"description": "Governance tool for defining or modifying allowed node kinds and relationship rules in the knowledge graph schema. Note: requires --allow-schema-edit server startup flag.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"enum":        []string{"add_kind", "remove_kind", "add_relation", "remove_relation"},
+					"enum":        []string{"add_kind", "remove_kind", "add_relation", "remove_relation", "rename_kind", "rename_relation"},
 					"description": "Schema action to perform",
 				},
 				"kind": map[string]any{
 					"type":        "string",
-					"description": "Node kind name (for add_kind / remove_kind)",
+					"description": "Node kind name (for add_kind / remove_kind / rename_kind)",
 				},
 				"relation": map[string]any{
 					"type":        "string",
-					"description": "Relationship type (for add_relation / remove_relation)",
+					"description": "Relationship type (for add_relation / remove_relation / rename_relation)",
 				},
 				"from_kind": map[string]any{
 					"type":        "string",
-					"description": "Source node kind (for add_relation / remove_relation)",
+					"description": "Source node kind (for add_relation / remove_relation / rename_relation)",
 				},
 				"to_kind": map[string]any{
 					"type":        "string",
-					"description": "Target node kind (for add_relation / remove_relation)",
+					"description": "Target node kind (for add_relation / remove_relation / rename_relation)",
+				},
+				"new_kind": map[string]any{
+					"type":        "string",
+					"description": "New node kind name (for rename_kind)",
+				},
+				"new_relation": map[string]any{
+					"type":        "string",
+					"description": "New relationship type (for rename_relation)",
+				},
+				"cascade": map[string]any{
+					"type":        "boolean",
+					"description": "If true, cascades deletion of nodes or edges associated with the removed kind/relation",
+				},
+				"migrate_to": map[string]any{
+					"type":        "string",
+					"description": "Target kind or relationship type to migrate existing data to before removal",
 				},
 				"description": map[string]any{
 					"type":        "string",
@@ -336,49 +365,86 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("init indices: %w", err)
 	}
 
-	// 1. Full-Text Search (FTS5) table and triggers
+	// 1. Full-Text Search (FTS5) table with trigram tokenizer, json_tree value-only indexing, and triggers
 	ftsDDL := `
-		CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(id, kind, content);
+		CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(id, kind, content, tokenize='trigram');
 
-		CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
-			INSERT INTO nodes_fts(rowid, id, kind, content) VALUES (new.rowid, new.id, new.kind, new.properties);
+		DROP TRIGGER IF EXISTS nodes_ai;
+		DROP TRIGGER IF EXISTS nodes_ad;
+		DROP TRIGGER IF EXISTS nodes_au;
+
+		CREATE TRIGGER nodes_ai AFTER INSERT ON nodes BEGIN
+			INSERT INTO nodes_fts(rowid, id, kind, content) VALUES (
+				new.rowid, 
+				new.id, 
+				new.kind, 
+				CASE 
+					WHEN json_valid(new.properties) THEN (SELECT coalesce(group_concat(value, ' '), '') FROM json_tree(new.properties) WHERE atom IS NOT NULL)
+					ELSE new.properties 
+				END
+			);
 		END;
-		CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
+		CREATE TRIGGER nodes_ad AFTER DELETE ON nodes BEGIN
 			DELETE FROM nodes_fts WHERE rowid = old.rowid;
 		END;
-		CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
+		CREATE TRIGGER nodes_au AFTER UPDATE ON nodes BEGIN
 			DELETE FROM nodes_fts WHERE rowid = old.rowid;
-			INSERT INTO nodes_fts(rowid, id, kind, content) VALUES (new.rowid, new.id, new.kind, new.properties);
+			INSERT INTO nodes_fts(rowid, id, kind, content) VALUES (
+				new.rowid, 
+				new.id, 
+				new.kind, 
+				CASE 
+					WHEN json_valid(new.properties) THEN (SELECT coalesce(group_concat(value, ' '), '') FROM json_tree(new.properties) WHERE atom IS NOT NULL)
+					ELSE new.properties 
+				END
+			);
 		END;
 	`
 	if _, err := db.Exec(ftsDDL); err != nil {
 		return nil, fmt.Errorf("init fts5: %w", err)
 	}
 
-	// Backfill FTS index for any existing nodes
-	backfillFTS := `
+	// Re-sync FTS index for all nodes extracting only values via json_tree
+	rebuildFTS := `
+		DELETE FROM nodes_fts;
 		INSERT INTO nodes_fts(rowid, id, kind, content)
-		SELECT rowid, id, kind, properties FROM nodes
-		WHERE rowid NOT IN (SELECT rowid FROM nodes_fts);
+		SELECT rowid, id, kind, 
+			CASE 
+				WHEN json_valid(properties) THEN (SELECT coalesce(group_concat(value, ' '), '') FROM json_tree(properties) WHERE atom IS NOT NULL)
+				ELSE properties 
+			END
+		FROM nodes;
 	`
-	if _, err := db.Exec(backfillFTS); err != nil {
-		return nil, fmt.Errorf("backfill fts5: %w", err)
+	if _, err := db.Exec(rebuildFTS); err != nil {
+		return nil, fmt.Errorf("rebuild fts5: %w", err)
 	}
 
-	// 2. Schema governance tables
+	// 2. Schema governance tables and changelog
 	schemaDDL := `
 		CREATE TABLE IF NOT EXISTS schema_kinds (
-			kind TEXT PRIMARY KEY,
+			kind TEXT PRIMARY KEY COLLATE NOCASE,
 			description TEXT
 		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_kinds_nocase ON schema_kinds(kind COLLATE NOCASE);
+
 		CREATE TABLE IF NOT EXISTS schema_relations (
-			rel_type TEXT NOT NULL,
-			from_kind TEXT NOT NULL,
-			to_kind TEXT NOT NULL,
+			rel_type TEXT NOT NULL COLLATE NOCASE,
+			from_kind TEXT NOT NULL COLLATE NOCASE,
+			to_kind TEXT NOT NULL COLLATE NOCASE,
 			description TEXT,
 			PRIMARY KEY(rel_type, from_kind, to_kind)
 		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_relations_nocase ON schema_relations(rel_type COLLATE NOCASE, from_kind COLLATE NOCASE, to_kind COLLATE NOCASE);
 		CREATE INDEX IF NOT EXISTS idx_schema_rel_lookup ON schema_relations(rel_type, from_kind, to_kind);
+
+		CREATE TABLE IF NOT EXISTS schema_changelog (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			action TEXT NOT NULL,
+			entity_type TEXT NOT NULL,
+			entity_name TEXT NOT NULL,
+			details TEXT
+		);
 	`
 	if _, err := db.Exec(schemaDDL); err != nil {
 		return nil, fmt.Errorf("init schema tables: %w", err)
@@ -520,7 +586,7 @@ func validateNodeKind(q dbOrTx, kind string, strictFlag bool) error {
 	}
 
 	var exists bool
-	err = q.QueryRow("SELECT EXISTS(SELECT 1 FROM schema_kinds WHERE kind = ?)", kind).Scan(&exists)
+	err = q.QueryRow("SELECT EXISTS(SELECT 1 FROM schema_kinds WHERE kind = ? COLLATE NOCASE)", kind).Scan(&exists)
 	if err != nil {
 		return fmt.Errorf("validate kind: %w", err)
 	}
@@ -537,6 +603,9 @@ func validateNodeKind(q dbOrTx, kind string, strictFlag bool) error {
 				allowed = append(allowed, k)
 			}
 		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("schema validation error: %w", err)
+		}
 		return fmt.Errorf("schema validation error: node kind '%s' is not registered in schema. Allowed kinds: [%s]", kind, strings.Join(allowed, ", "))
 	}
 	return nil
@@ -552,12 +621,23 @@ func validateEdgeRelation(q dbOrTx, fromKind, toKind, relType string, strictFlag
 	}
 
 	var exists bool
-	err = q.QueryRow("SELECT EXISTS(SELECT 1 FROM schema_relations WHERE rel_type = ? AND from_kind = ? AND to_kind = ?)", relType, fromKind, toKind).Scan(&exists)
+	err = q.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM schema_relations 
+			WHERE rel_type = ? COLLATE NOCASE 
+			  AND from_kind = ? COLLATE NOCASE 
+			  AND to_kind = ? COLLATE NOCASE
+		)
+	`, relType, fromKind, toKind).Scan(&exists)
 	if err != nil {
 		return fmt.Errorf("validate relation: %w", err)
 	}
 	if !exists {
-		rows, err := q.Query("SELECT rel_type FROM schema_relations WHERE from_kind = ? AND to_kind = ? ORDER BY rel_type", fromKind, toKind)
+		rows, err := q.Query(`
+			SELECT rel_type FROM schema_relations 
+			WHERE from_kind = ? COLLATE NOCASE AND to_kind = ? COLLATE NOCASE 
+			ORDER BY rel_type
+		`, fromKind, toKind)
 		if err != nil {
 			return fmt.Errorf("schema validation error: relation '%s' is not permitted between '%s' and '%s'", relType, fromKind, toKind)
 		}
@@ -569,6 +649,9 @@ func validateEdgeRelation(q dbOrTx, fromKind, toKind, relType string, strictFlag
 				allowed = append(allowed, r)
 			}
 		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("schema validation error: %w", err)
+		}
 		if len(allowed) > 0 {
 			return fmt.Errorf("schema validation error: relation '%s' is not permitted between '%s' and '%s'. Allowed relations: [%s]", relType, fromKind, toKind, strings.Join(allowed, ", "))
 		}
@@ -577,9 +660,73 @@ func validateEdgeRelation(q dbOrTx, fromKind, toKind, relType string, strictFlag
 	return nil
 }
 
+func validateNodeKindChange(q dbOrTx, id, existingKind, newKind string, strictFlag bool) error {
+	enforced, err := isSchemaEnforced(q, strictFlag)
+	if err != nil {
+		return fmt.Errorf("check schema enforcement: %w", err)
+	}
+	if !enforced || strings.EqualFold(existingKind, newKind) {
+		return nil
+	}
+
+	// 1. Check outgoing edges from this node
+	outSQL := `
+		SELECT e.kind, nt.kind
+		FROM edges e
+		JOIN nodes nt ON e.to_id = nt.id
+		WHERE e.from_id = ?
+		  AND NOT EXISTS (
+			  SELECT 1 FROM schema_relations sr
+			  WHERE sr.rel_type = e.kind COLLATE NOCASE
+			    AND sr.from_kind = ? COLLATE NOCASE
+			    AND sr.to_kind = nt.kind COLLATE NOCASE
+		  )
+		LIMIT 1;
+	`
+	var outRel, outTargetKind string
+	err = q.QueryRow(outSQL, id, newKind).Scan(&outRel, &outTargetKind)
+	if err == nil {
+		return fmt.Errorf("schema validation error: cannot change kind of node '%s' from '%s' to '%s': outgoing relationship (:%s)-[:%s]->(:%s) is not permitted by schema", id, existingKind, newKind, newKind, outRel, outTargetKind)
+	} else if err != sql.ErrNoRows {
+		return fmt.Errorf("validate outgoing edges on kind change: %w", err)
+	}
+
+	// 2. Check incoming edges to this node
+	inSQL := `
+		SELECT e.kind, nf.kind
+		FROM edges e
+		JOIN nodes nf ON e.from_id = nf.id
+		WHERE e.to_id = ?
+		  AND NOT EXISTS (
+			  SELECT 1 FROM schema_relations sr
+			  WHERE sr.rel_type = e.kind COLLATE NOCASE
+			    AND sr.from_kind = nf.kind COLLATE NOCASE
+			    AND sr.to_kind = ? COLLATE NOCASE
+		  )
+		LIMIT 1;
+	`
+	var inRel, inSourceKind string
+	err = q.QueryRow(inSQL, id, newKind).Scan(&inRel, &inSourceKind)
+	if err == nil {
+		return fmt.Errorf("schema validation error: cannot change kind of node '%s' from '%s' to '%s': incoming relationship (:%s)-[:%s]->(:%s) is not permitted by schema", id, existingKind, newKind, inSourceKind, inRel, newKind)
+	} else if err != sql.ErrNoRows {
+		return fmt.Errorf("validate incoming edges on kind change: %w", err)
+	}
+
+	return nil
+}
+
 // ── Query & Search Handlers ────────────────────────────────────────────────
 
-func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]any) (string, error) {
+var defaultMaxRows = 1000
+
+func handleGraphQuery(db *sql.DB, cypherQuery string, options ...any) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return handleGraphQueryContext(ctx, db, cypherQuery, options...)
+}
+
+func handleGraphQueryContext(ctx context.Context, db *sql.DB, cypherQuery string, options ...any) (string, error) {
 	start := time.Now()
 
 	// Defense-in-depth: check unsafe identifiers
@@ -589,8 +736,15 @@ func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]
 		}
 	}
 	var params map[string]any
-	if len(queryParams) > 0 && queryParams[0] != nil {
-		params = queryParams[0]
+	maxRows := defaultMaxRows
+
+	for _, opt := range options {
+		switch v := opt.(type) {
+		case map[string]any:
+			params = v
+		case int:
+			maxRows = v
+		}
 	}
 
 	compiled, err := cyphersql.CompileWithParams(cypherQuery, params)
@@ -608,9 +762,6 @@ func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]
 		sqlArgs = append(sqlArgs, sql.Named(k, v))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
 	qStart := time.Now()
 	rows, err := db.QueryContext(ctx, compiled.SQL, sqlArgs...)
 	if err != nil {
@@ -624,7 +775,12 @@ func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]
 	}
 
 	results := make([]map[string]any, 0)
+	truncated := false
 	for rows.Next() {
+		if maxRows > 0 && len(results) >= maxRows {
+			truncated = true
+			break
+		}
 		colVals := make([]any, len(cols))
 		colPointers := make([]any, len(cols))
 		for i := range colVals {
@@ -665,6 +821,9 @@ func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]
 		}
 		results = append(results, rowMap)
 	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("row iteration error: %w", err)
+	}
 	execDuration := time.Since(qStart)
 
 	payload := map[string]any{
@@ -673,6 +832,10 @@ func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]
 		"compiled_sql":    compiled.SQL,
 		"compile_time_us": compileDuration.Microseconds(),
 		"execute_time_us": execDuration.Microseconds(),
+	}
+	if truncated {
+		payload["truncated"] = true
+		payload["warning"] = fmt.Sprintf("Query result was truncated to %d rows. Use Cypher LIMIT to narrow your query.", maxRows)
 	}
 
 	b, _ := json.MarshalIndent(payload, "", "  ")
@@ -724,9 +887,11 @@ func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int) (
 		return string(b), nil
 	}
 
-	var quotedTokens []string
+	var trigramTokens []string
 	for _, t := range tokens {
-		quotedTokens = append(quotedTokens, fmt.Sprintf("\"%s\"*", t))
+		if len([]rune(t)) >= 3 {
+			trigramTokens = append(trigramTokens, fmt.Sprintf("\"%s\"", t))
+		}
 	}
 
 	searchSQL := `
@@ -746,7 +911,7 @@ func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int) (
 		}
 		defer rows.Close()
 
-		var items []SearchResultItem
+		items := make([]SearchResultItem, 0)
 		for rows.Next() {
 			var item SearchResultItem
 			var propsRaw string
@@ -761,23 +926,66 @@ func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int) (
 			}
 			items = append(items, item)
 		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("fts row iteration error: %w", err)
+		}
 		return items, nil
 	}
 
-	// 1. Try AND query first
-	ftsAnd := strings.Join(quotedTokens, " ")
-	items, err := executeFTS(ftsAnd)
-	if err != nil {
-		return "", fmt.Errorf("fts search execution error: %w", err)
+	var items []SearchResultItem
+
+	// 1. Try trigram FTS search if tokens of length >= 3 exist
+	if len(trigramTokens) > 0 {
+		ftsAnd := strings.Join(trigramTokens, " AND ")
+		var err error
+		items, err = executeFTS(ftsAnd)
+		if err == nil && len(items) == 0 && len(trigramTokens) > 1 {
+			ftsOr := strings.Join(trigramTokens, " OR ")
+			items, _ = executeFTS(ftsOr)
+		}
 	}
 
-	// 2. If no matches and multiple tokens, fallback to OR
-	if len(items) == 0 && len(quotedTokens) > 1 {
-		ftsOr := strings.Join(quotedTokens, " OR ")
-		items, err = executeFTS(ftsOr)
+	// 2. If 0 results or short query (< 3 chars), fallback to LIKE on nodes table (values only)
+	if len(items) == 0 {
+		likePat := "%" + strings.TrimSpace(query) + "%"
+		likeSQL := `
+			SELECT id, kind, properties, 0.0 AS rank
+			FROM nodes
+			WHERE (id LIKE ? OR (
+				CASE 
+					WHEN json_valid(properties) THEN (SELECT coalesce(group_concat(value, ' '), '') FROM json_tree(properties) WHERE atom IS NOT NULL)
+					ELSE properties 
+				END
+			) LIKE ?)
+			  AND (? = '' OR kind = ?)
+			LIMIT ?;
+		`
+		rows, err := db.Query(likeSQL, likePat, likePat, kindFilter, kindFilter, limit)
 		if err != nil {
-			return "", fmt.Errorf("fts fallback search execution error: %w", err)
+			return "", fmt.Errorf("fallback search query error: %w", err)
 		}
+		defer rows.Close()
+		for rows.Next() {
+			var item SearchResultItem
+			var propsRaw string
+			if err := rows.Scan(&item.ID, &item.Kind, &propsRaw, &item.Rank); err != nil {
+				return "", fmt.Errorf("fallback search scan error: %w", err)
+			}
+			var parsedProps any
+			if err := json.Unmarshal([]byte(propsRaw), &parsedProps); err == nil {
+				item.Properties = parsedProps
+			} else {
+				item.Properties = propsRaw
+			}
+			items = append(items, item)
+		}
+		if err := rows.Err(); err != nil {
+			return "", fmt.Errorf("fallback search iteration error: %w", err)
+		}
+	}
+
+	if items == nil {
+		items = make([]SearchResultItem, 0)
 	}
 
 	resp := map[string]any{
@@ -791,8 +999,22 @@ func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int) (
 
 // ── Mutation Handlers ──────────────────────────────────────────────────────
 
-func handleSetNode(db *sql.DB, id, kind string, props map[string]any, strictFlag ...bool) (string, error) {
-	isStrict := len(strictFlag) > 0 && strictFlag[0]
+func handleSetNode(db *sql.DB, id, kind string, props map[string]any, options ...any) (string, error) {
+	isStrict := false
+	merge := true
+	boolCount := 0
+	for _, opt := range options {
+		switch v := opt.(type) {
+		case bool:
+			if boolCount == 0 {
+				isStrict = v
+			} else if boolCount == 1 {
+				merge = v
+			}
+			boolCount++
+		}
+	}
+
 	id = strings.TrimSpace(id)
 	kind = strings.TrimSpace(kind)
 	if id == "" {
@@ -802,8 +1024,25 @@ func handleSetNode(db *sql.DB, id, kind string, props map[string]any, strictFlag
 		return "", fmt.Errorf("node kind cannot be empty")
 	}
 
+	if err := cyphersql.ValidateIdentifier("kind", kind); err != nil {
+		return "", err
+	}
+
+	var canonicalKind string
+	if err := db.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", kind).Scan(&canonicalKind); err == nil {
+		kind = canonicalKind
+	}
+
 	if err := validateNodeKind(db, kind, isStrict); err != nil {
 		return "", err
+	}
+
+	// Validate relationship consistency if updating an existing node's kind
+	var existingKind string
+	if err := db.QueryRow("SELECT kind FROM nodes WHERE id = ?", id).Scan(&existingKind); err == nil && !strings.EqualFold(existingKind, kind) {
+		if err := validateNodeKindChange(db, id, existingKind, kind, isStrict); err != nil {
+			return "", err
+		}
 	}
 
 	if props == nil {
@@ -814,10 +1053,20 @@ func handleSetNode(db *sql.DB, id, kind string, props map[string]any, strictFlag
 		return "", fmt.Errorf("marshal properties: %w", err)
 	}
 
-	query := `
-		INSERT INTO nodes (id, kind, properties) VALUES (?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, properties = excluded.properties;
-	`
+	var query string
+	if merge {
+		query = `
+			INSERT INTO nodes (id, kind, properties) VALUES (?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET 
+				kind = excluded.kind, 
+				properties = json_patch(CASE WHEN json_valid(nodes.properties) THEN nodes.properties ELSE '{}' END, excluded.properties);
+		`
+	} else {
+		query = `
+			INSERT INTO nodes (id, kind, properties) VALUES (?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, properties = excluded.properties;
+		`
+	}
 	if _, err := db.Exec(query, id, kind, string(propsJSON)); err != nil {
 		return "", fmt.Errorf("upsert node %s: %w", id, err)
 	}
@@ -825,8 +1074,21 @@ func handleSetNode(db *sql.DB, id, kind string, props map[string]any, strictFlag
 	return fmt.Sprintf("Node '%s' of kind '%s' upserted successfully.", id, kind), nil
 }
 
-func handleSetEdge(db *sql.DB, from, to, kind string, props map[string]any, strictFlag ...bool) (string, error) {
-	isStrict := len(strictFlag) > 0 && strictFlag[0]
+func handleSetEdge(db *sql.DB, from, to, kind string, props map[string]any, options ...any) (string, error) {
+	isStrict := false
+	merge := true
+	boolCount := 0
+	for _, opt := range options {
+		switch v := opt.(type) {
+		case bool:
+			if boolCount == 0 {
+				isStrict = v
+			} else if boolCount == 1 {
+				merge = v
+			}
+			boolCount++
+		}
+	}
 	from = strings.TrimSpace(from)
 	to = strings.TrimSpace(to)
 	kind = strings.TrimSpace(kind)
@@ -839,6 +1101,11 @@ func handleSetEdge(db *sql.DB, from, to, kind string, props map[string]any, stri
 	if kind == "" {
 		return "", fmt.Errorf("edge 'kind' cannot be empty")
 	}
+
+	if err := cyphersql.ValidateIdentifier("relationship type", kind); err != nil {
+		return "", err
+	}
+
 	if props == nil {
 		props = make(map[string]any)
 	}
@@ -869,14 +1136,33 @@ func handleSetEdge(db *sql.DB, from, to, kind string, props map[string]any, stri
 		return "", fmt.Errorf("check to node: %w", err)
 	}
 
+	var canonicalRel string
+	if err := tx.QueryRow(`
+		SELECT rel_type FROM schema_relations 
+		WHERE rel_type = ? COLLATE NOCASE 
+		  AND from_kind = ? COLLATE NOCASE 
+		  AND to_kind = ? COLLATE NOCASE
+	`, kind, fromKind, toKind).Scan(&canonicalRel); err == nil {
+		kind = canonicalRel
+	}
+
 	if err := validateEdgeRelation(tx, fromKind, toKind, kind, isStrict); err != nil {
 		return "", err
 	}
 
-	upsertQuery := `
-		INSERT INTO edges (from_id, to_id, kind, properties) VALUES (?, ?, ?, ?)
-		ON CONFLICT(from_id, to_id, kind) DO UPDATE SET properties = excluded.properties;
-	`
+	var upsertQuery string
+	if merge {
+		upsertQuery = `
+			INSERT INTO edges (from_id, to_id, kind, properties) VALUES (?, ?, ?, ?)
+			ON CONFLICT(from_id, to_id, kind) DO UPDATE SET 
+				properties = json_patch(CASE WHEN json_valid(edges.properties) THEN edges.properties ELSE '{}' END, excluded.properties);
+		`
+	} else {
+		upsertQuery = `
+			INSERT INTO edges (from_id, to_id, kind, properties) VALUES (?, ?, ?, ?)
+			ON CONFLICT(from_id, to_id, kind) DO UPDATE SET properties = excluded.properties;
+		`
+	}
 	if _, err := tx.Exec(upsertQuery, from, to, kind, string(propsJSON)); err != nil {
 		return "", fmt.Errorf("upsert edge (%s)-[%s]->(%s): %w", from, kind, to, err)
 	}
@@ -924,8 +1210,20 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 	}
 	defer tx.Rollback()
 
+	nodeStmt, err := tx.Prepare(`
+		INSERT INTO nodes (id, kind, properties) VALUES (?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET 
+			kind = excluded.kind, 
+			properties = json_patch(CASE WHEN json_valid(nodes.properties) THEN nodes.properties ELSE '{}' END, excluded.properties);
+	`)
+	if err != nil {
+		return "", fmt.Errorf("prepare node upsert: %w", err)
+	}
+	defer nodeStmt.Close()
+
 	// 1. Process and upsert nodes
 	upsertedNodes := 0
+	nodeKindCache := make(map[string]string, len(nodes))
 	for i, n := range nodes {
 		id := strings.TrimSpace(n.ID)
 		kind := strings.TrimSpace(n.Kind)
@@ -935,8 +1233,23 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 		if kind == "" {
 			return "", fmt.Errorf("node[%d] (%s): kind cannot be empty", i, id)
 		}
+		if err := cyphersql.ValidateIdentifier("kind", kind); err != nil {
+			return "", fmt.Errorf("node[%d] (%s): %w", i, id, err)
+		}
+		var canonicalKind string
+		if err := tx.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", kind).Scan(&canonicalKind); err == nil {
+			kind = canonicalKind
+		}
 		if err := validateNodeKind(tx, kind, isStrict); err != nil {
 			return "", fmt.Errorf("node[%d] (%s): %w", i, id, err)
+		}
+
+		// Validate relationship consistency if updating an existing node's kind
+		var existingKind string
+		if err := tx.QueryRow("SELECT kind FROM nodes WHERE id = ?", id).Scan(&existingKind); err == nil && !strings.EqualFold(existingKind, kind) {
+			if err := validateNodeKindChange(tx, id, existingKind, kind, isStrict); err != nil {
+				return "", fmt.Errorf("node[%d] (%s): %w", i, id, err)
+			}
 		}
 		props := n.Properties
 		if props == nil {
@@ -946,15 +1259,38 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 		if err != nil {
 			return "", fmt.Errorf("node[%d] (%s): marshal properties: %w", i, id, err)
 		}
-		query := `
-			INSERT INTO nodes (id, kind, properties) VALUES (?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, properties = excluded.properties;
-		`
-		if _, err := tx.Exec(query, id, kind, string(propsJSON)); err != nil {
+		if _, err := nodeStmt.Exec(id, kind, string(propsJSON)); err != nil {
 			return "", fmt.Errorf("upsert node %s: %w", id, err)
 		}
+		nodeKindCache[id] = kind
 		upsertedNodes++
 	}
+
+	getNodeKind := func(nodeID string) (string, error) {
+		if k, ok := nodeKindCache[nodeID]; ok {
+			return k, nil
+		}
+		var k string
+		err := tx.QueryRow("SELECT kind FROM nodes WHERE id = ?", nodeID).Scan(&k)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return "", sql.ErrNoRows
+			}
+			return "", err
+		}
+		nodeKindCache[nodeID] = k
+		return k, nil
+	}
+
+	edgeStmt, err := tx.Prepare(`
+		INSERT INTO edges (from_id, to_id, kind, properties) VALUES (?, ?, ?, ?)
+		ON CONFLICT(from_id, to_id, kind) DO UPDATE SET 
+			properties = json_patch(CASE WHEN json_valid(edges.properties) THEN edges.properties ELSE '{}' END, excluded.properties);
+	`)
+	if err != nil {
+		return "", fmt.Errorf("prepare edge upsert: %w", err)
+	}
+	defer edgeStmt.Close()
 
 	// 2. Process and upsert edges
 	upsertedEdges := 0
@@ -971,9 +1307,11 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 		if kind == "" {
 			return "", fmt.Errorf("edge[%d]: 'kind' cannot be empty", i)
 		}
+		if err := cyphersql.ValidateIdentifier("relationship type", kind); err != nil {
+			return "", fmt.Errorf("edge[%d]: %w", i, err)
+		}
 
-		var fromKind, toKind string
-		err := tx.QueryRow("SELECT kind FROM nodes WHERE id = ?", from).Scan(&fromKind)
+		fromKind, err := getNodeKind(from)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return "", fmt.Errorf("edge[%d]: source node '%s' does not exist", i, from)
@@ -981,12 +1319,22 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 			return "", fmt.Errorf("edge[%d]: check source node '%s': %w", i, from, err)
 		}
 
-		err = tx.QueryRow("SELECT kind FROM nodes WHERE id = ?", to).Scan(&toKind)
+		toKind, err := getNodeKind(to)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return "", fmt.Errorf("edge[%d]: target node '%s' does not exist", i, to)
 			}
 			return "", fmt.Errorf("edge[%d]: check target node '%s': %w", i, to, err)
+		}
+
+		var canonicalRel string
+		if err := tx.QueryRow(`
+			SELECT rel_type FROM schema_relations 
+			WHERE rel_type = ? COLLATE NOCASE 
+			  AND from_kind = ? COLLATE NOCASE 
+			  AND to_kind = ? COLLATE NOCASE
+		`, kind, fromKind, toKind).Scan(&canonicalRel); err == nil {
+			kind = canonicalRel
 		}
 
 		if err := validateEdgeRelation(tx, fromKind, toKind, kind, isStrict); err != nil {
@@ -1002,11 +1350,7 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 			return "", fmt.Errorf("edge[%d]: marshal properties: %w", i, err)
 		}
 
-		upsertQuery := `
-			INSERT INTO edges (from_id, to_id, kind, properties) VALUES (?, ?, ?, ?)
-			ON CONFLICT(from_id, to_id, kind) DO UPDATE SET properties = excluded.properties;
-		`
-		if _, err := tx.Exec(upsertQuery, from, to, kind, string(propsJSON)); err != nil {
+		if _, err := edgeStmt.Exec(from, to, kind, string(propsJSON)); err != nil {
 			return "", fmt.Errorf("upsert edge (%s)-[%s]->(%s): %w", from, kind, to, err)
 		}
 		upsertedEdges++
@@ -1102,6 +1446,29 @@ func handleSchema(db *sql.DB, strictFlag ...bool) (string, error) {
 		rRows.Close()
 	}
 
+	type SchemaChangelogEntry struct {
+		ID         int    `json:"id"`
+		Timestamp  string `json:"timestamp"`
+		Action     string `json:"action"`
+		EntityType string `json:"entity_type"`
+		EntityName string `json:"entity_name"`
+		Details    string `json:"details,omitempty"`
+	}
+	var changelog []SchemaChangelogEntry
+	clRows, err := db.Query("SELECT id, timestamp, action, entity_type, entity_name, coalesce(details, '') FROM schema_changelog ORDER BY id DESC LIMIT 20")
+	if err == nil {
+		for clRows.Next() {
+			var entry SchemaChangelogEntry
+			if err := clRows.Scan(&entry.ID, &entry.Timestamp, &entry.Action, &entry.EntityType, &entry.EntityName, &entry.Details); err == nil {
+				changelog = append(changelog, entry)
+			}
+		}
+		clRows.Close()
+	}
+	if changelog == nil {
+		changelog = make([]SchemaChangelogEntry, 0)
+	}
+
 	summary := map[string]any{
 		"total_nodes":       totalNodes,
 		"total_edges":       totalEdges,
@@ -1110,13 +1477,43 @@ func handleSchema(db *sql.DB, strictFlag ...bool) (string, error) {
 		"schema_enforced":   enforced,
 		"allowed_kinds":     allowedKinds,
 		"allowed_relations": allowedRelations,
+		"changelog":         changelog,
 	}
 
 	b, _ := json.MarshalIndent(summary, "", "  ")
 	return string(b), nil
 }
 
-func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, description string) (string, error) {
+type SchemaDefineOptions struct {
+	AllowSchemaEdit bool
+	Cascade         bool
+	MigrateTo       string
+	NewKind         string
+	NewRelation     string
+}
+
+func logSchemaChange(q dbOrTx, action, entityType, entityName, details string) error {
+	_, err := q.Exec(`
+		INSERT INTO schema_changelog (action, entity_type, entity_name, details)
+		VALUES (?, ?, ?, ?);
+	`, action, entityType, entityName, details)
+	return err
+}
+
+func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, description string, extraOpts ...any) (string, error) {
+	var opts SchemaDefineOptions
+	if len(extraOpts) > 0 {
+		switch v := extraOpts[0].(type) {
+		case bool:
+			opts.AllowSchemaEdit = v
+		case SchemaDefineOptions:
+			opts = v
+		}
+	}
+	if !opts.AllowSchemaEdit {
+		return "", fmt.Errorf("schema modification is locked (read-only mode). Restart cypher-mcp with --allow-schema-edit to modify taxonomy schema rules")
+	}
+
 	action = strings.ToLower(strings.TrimSpace(action))
 	switch action {
 	case "add_kind":
@@ -1124,12 +1521,32 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 		if kind == "" {
 			return "", fmt.Errorf("'kind' cannot be empty for add_kind")
 		}
-		_, err := db.Exec(`
+		if err := cyphersql.ValidateIdentifier("kind", kind); err != nil {
+			return "", err
+		}
+		var existingKind string
+		err := db.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", kind).Scan(&existingKind)
+		if err == nil && existingKind != kind {
+			return "", fmt.Errorf("node kind '%s' conflicts with existing kind '%s' (case-insensitive uniqueness required)", kind, existingKind)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return "", fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		_, err = tx.Exec(`
 			INSERT INTO schema_kinds (kind, description) VALUES (?, ?)
 			ON CONFLICT(kind) DO UPDATE SET description = excluded.description;
 		`, kind, description)
 		if err != nil {
 			return "", fmt.Errorf("add kind: %w", err)
+		}
+		if err := logSchemaChange(tx, "add_kind", "kind", kind, description); err != nil {
+			return "", fmt.Errorf("log schema change: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return "", fmt.Errorf("commit add kind: %w", err)
 		}
 		return fmt.Sprintf("Node kind '%s' registered in schema.", kind), nil
 
@@ -1138,11 +1555,85 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 		if kind == "" {
 			return "", fmt.Errorf("'kind' cannot be empty for remove_kind")
 		}
+		var canonicalKind string
+		err := db.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", kind).Scan(&canonicalKind)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return "", fmt.Errorf("node kind '%s' not found in schema", kind)
+			}
+			return "", fmt.Errorf("query schema_kinds: %w", err)
+		}
+		kind = canonicalKind
+
+		// Check for existing data
+		var nodeCount, edgeCount int
+		if err := db.QueryRow("SELECT count(*) FROM nodes WHERE kind = ?", kind).Scan(&nodeCount); err != nil {
+			return "", fmt.Errorf("count existing nodes: %w", err)
+		}
+		if err := db.QueryRow(`
+			SELECT count(*) FROM edges 
+			WHERE from_id IN (SELECT id FROM nodes WHERE kind = ?) 
+			   OR to_id IN (SELECT id FROM nodes WHERE kind = ?)
+		`, kind, kind).Scan(&edgeCount); err != nil {
+			return "", fmt.Errorf("count existing edges: %w", err)
+		}
+
+		if (nodeCount > 0 || edgeCount > 0) && !opts.Cascade && opts.MigrateTo == "" {
+			return "", fmt.Errorf("cannot remove kind '%s': %d nodes (and %d related edges) exist. Use cascade=true to delete data or migrate_to to reassign nodes to another kind", kind, nodeCount, edgeCount)
+		}
+
 		tx, err := db.Begin()
 		if err != nil {
 			return "", fmt.Errorf("begin transaction: %w", err)
 		}
 		defer tx.Rollback()
+
+		if opts.MigrateTo != "" {
+			migrateTo := strings.TrimSpace(opts.MigrateTo)
+			if err := cyphersql.ValidateIdentifier("kind", migrateTo); err != nil {
+				return "", fmt.Errorf("invalid migrate_to kind %q: %w", migrateTo, err)
+			}
+			var targetCanonical string
+			err := tx.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", migrateTo).Scan(&targetCanonical)
+			if err != nil {
+				return "", fmt.Errorf("migrate_to target kind '%s' does not exist in schema", migrateTo)
+			}
+			migrateTo = targetCanonical
+
+			if _, err := tx.Exec("UPDATE nodes SET kind = ? WHERE kind = ?", migrateTo, kind); err != nil {
+				return "", fmt.Errorf("migrate nodes: %w", err)
+			}
+			if _, err := tx.Exec("UPDATE schema_relations SET from_kind = ? WHERE from_kind = ?", migrateTo, kind); err != nil {
+				return "", fmt.Errorf("migrate schema relations from_kind: %w", err)
+			}
+			if _, err := tx.Exec("UPDATE schema_relations SET to_kind = ? WHERE to_kind = ?", migrateTo, kind); err != nil {
+				return "", fmt.Errorf("migrate schema relations to_kind: %w", err)
+			}
+			if _, err := tx.Exec("DELETE FROM schema_kinds WHERE kind = ?", kind); err != nil {
+				return "", fmt.Errorf("delete schema kind: %w", err)
+			}
+			detail := fmt.Sprintf("migrated %d nodes to %s", nodeCount, migrateTo)
+			if err := logSchemaChange(tx, "remove_kind", "kind", kind, detail); err != nil {
+				return "", fmt.Errorf("log schema change: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return "", fmt.Errorf("commit remove kind with migration: %w", err)
+			}
+			return fmt.Sprintf("Node kind '%s' removed from schema, %d nodes migrated to '%s'.", kind, nodeCount, migrateTo), nil
+		}
+
+		if opts.Cascade {
+			if _, err := tx.Exec(`
+				DELETE FROM edges 
+				WHERE from_id IN (SELECT id FROM nodes WHERE kind = ?) 
+				   OR to_id IN (SELECT id FROM nodes WHERE kind = ?)
+			`, kind, kind); err != nil {
+				return "", fmt.Errorf("cascade delete edges: %w", err)
+			}
+			if _, err := tx.Exec("DELETE FROM nodes WHERE kind = ?", kind); err != nil {
+				return "", fmt.Errorf("cascade delete nodes: %w", err)
+			}
+		}
 
 		if _, err := tx.Exec("DELETE FROM schema_relations WHERE from_kind = ? OR to_kind = ?", kind, kind); err != nil {
 			return "", fmt.Errorf("delete schema relations: %w", err)
@@ -1150,10 +1641,65 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 		if _, err := tx.Exec("DELETE FROM schema_kinds WHERE kind = ?", kind); err != nil {
 			return "", fmt.Errorf("delete schema kind: %w", err)
 		}
+		detail := fmt.Sprintf("cascade=%v deleted %d nodes, %d edges", opts.Cascade, nodeCount, edgeCount)
+		if err := logSchemaChange(tx, "remove_kind", "kind", kind, detail); err != nil {
+			return "", fmt.Errorf("log schema change: %w", err)
+		}
 		if err := tx.Commit(); err != nil {
 			return "", fmt.Errorf("commit remove kind: %w", err)
 		}
 		return fmt.Sprintf("Node kind '%s' and associated relations removed from schema.", kind), nil
+
+	case "rename_kind":
+		kind = strings.TrimSpace(kind)
+		newKind := strings.TrimSpace(opts.NewKind)
+		if kind == "" || newKind == "" {
+			return "", fmt.Errorf("'kind' and 'new_kind' are required for rename_kind")
+		}
+		if err := cyphersql.ValidateIdentifier("kind", newKind); err != nil {
+			return "", err
+		}
+		var canonicalOld string
+		err := db.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", kind).Scan(&canonicalOld)
+		if err != nil {
+			return "", fmt.Errorf("node kind '%s' not found in schema", kind)
+		}
+		var existingNew string
+		err = db.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", newKind).Scan(&existingNew)
+		if err == nil && !strings.EqualFold(existingNew, canonicalOld) {
+			return "", fmt.Errorf("cannot rename to '%s': kind already exists in schema", newKind)
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			return "", fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		res, err := tx.Exec("UPDATE nodes SET kind = ? WHERE kind = ?", newKind, canonicalOld)
+		if err != nil {
+			return "", fmt.Errorf("update nodes kind: %w", err)
+		}
+		nodesUpdated, _ := res.RowsAffected()
+
+		if _, err := tx.Exec("UPDATE schema_kinds SET kind = ? WHERE kind = ?", newKind, canonicalOld); err != nil {
+			return "", fmt.Errorf("update schema_kinds: %w", err)
+		}
+		if _, err := tx.Exec("UPDATE schema_relations SET from_kind = ? WHERE from_kind = ?", newKind, canonicalOld); err != nil {
+			return "", fmt.Errorf("update schema_relations from_kind: %w", err)
+		}
+		if _, err := tx.Exec("UPDATE schema_relations SET to_kind = ? WHERE to_kind = ?", newKind, canonicalOld); err != nil {
+			return "", fmt.Errorf("update schema_relations to_kind: %w", err)
+		}
+
+		detail := fmt.Sprintf("renamed to %s (updated %d nodes)", newKind, nodesUpdated)
+		if err := logSchemaChange(tx, "rename_kind", "kind", canonicalOld, detail); err != nil {
+			return "", fmt.Errorf("log schema change: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return "", fmt.Errorf("commit rename kind: %w", err)
+		}
+		return fmt.Sprintf("Node kind '%s' renamed to '%s' (updated %d nodes and schema rules).", canonicalOld, newKind, nodesUpdated), nil
 
 	case "add_relation":
 		relation = strings.TrimSpace(relation)
@@ -1162,25 +1708,50 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 		if relation == "" || fromKind == "" || toKind == "" {
 			return "", fmt.Errorf("'relation', 'from_kind', and 'to_kind' are required for add_relation")
 		}
+		if err := cyphersql.ValidateIdentifier("relationship type", relation); err != nil {
+			return "", err
+		}
+		if err := cyphersql.ValidateIdentifier("kind", fromKind); err != nil {
+			return "", err
+		}
+		if err := cyphersql.ValidateIdentifier("kind", toKind); err != nil {
+			return "", err
+		}
+
 		tx, err := db.Begin()
 		if err != nil {
 			return "", fmt.Errorf("begin transaction: %w", err)
 		}
 		defer tx.Rollback()
 
-		// Ensure fromKind and toKind are recorded in schema_kinds
-		if _, err := tx.Exec("INSERT OR IGNORE INTO schema_kinds (kind, description) VALUES (?, '')", fromKind); err != nil {
-			return "", fmt.Errorf("ensure from_kind: %w", err)
+		// Canonicalize fromKind and toKind from schema_kinds if they exist
+		var canFrom, canTo string
+		if err := tx.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", fromKind).Scan(&canFrom); err == nil {
+			fromKind = canFrom
+		} else {
+			if _, err := tx.Exec("INSERT OR IGNORE INTO schema_kinds (kind, description) VALUES (?, '')", fromKind); err != nil {
+				return "", fmt.Errorf("ensure from_kind: %w", err)
+			}
 		}
-		if _, err := tx.Exec("INSERT OR IGNORE INTO schema_kinds (kind, description) VALUES (?, '')", toKind); err != nil {
-			return "", fmt.Errorf("ensure to_kind: %w", err)
+		if err := tx.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", toKind).Scan(&canTo); err == nil {
+			toKind = canTo
+		} else {
+			if _, err := tx.Exec("INSERT OR IGNORE INTO schema_kinds (kind, description) VALUES (?, '')", toKind); err != nil {
+				return "", fmt.Errorf("ensure to_kind: %w", err)
+			}
 		}
+
 		_, err = tx.Exec(`
 			INSERT INTO schema_relations (rel_type, from_kind, to_kind, description) VALUES (?, ?, ?, ?)
 			ON CONFLICT(rel_type, from_kind, to_kind) DO UPDATE SET description = excluded.description;
 		`, relation, fromKind, toKind, description)
 		if err != nil {
 			return "", fmt.Errorf("add relation: %w", err)
+		}
+
+		detail := fmt.Sprintf("(%s)-[:%s]->(%s): %s", fromKind, relation, toKind, description)
+		if err := logSchemaChange(tx, "add_relation", "relation", relation, detail); err != nil {
+			return "", fmt.Errorf("log schema change: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
 			return "", fmt.Errorf("commit add relation: %w", err)
@@ -1194,14 +1765,145 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 		if relation == "" || fromKind == "" || toKind == "" {
 			return "", fmt.Errorf("'relation', 'from_kind', and 'to_kind' are required for remove_relation")
 		}
-		_, err := db.Exec("DELETE FROM schema_relations WHERE rel_type = ? AND from_kind = ? AND to_kind = ?", relation, fromKind, toKind)
+
+		// Count existing edges matching this relation
+		var edgeCount int
+		countSQL := `
+			SELECT count(*) 
+			FROM edges e
+			JOIN nodes nf ON e.from_id = nf.id
+			JOIN nodes nt ON e.to_id = nt.id
+			WHERE e.kind = ? COLLATE NOCASE 
+			  AND nf.kind = ? COLLATE NOCASE 
+			  AND nt.kind = ? COLLATE NOCASE;
+		`
+		if err := db.QueryRow(countSQL, relation, fromKind, toKind).Scan(&edgeCount); err != nil {
+			return "", fmt.Errorf("count existing edges: %w", err)
+		}
+
+		if edgeCount > 0 && !opts.Cascade && opts.MigrateTo == "" {
+			return "", fmt.Errorf("cannot remove relation '%s': %d edges exist between %s and %s. Use cascade=true to delete data or migrate_to to reassign edges to another relation type", relation, edgeCount, fromKind, toKind)
+		}
+
+		tx, err := db.Begin()
 		if err != nil {
-			return "", fmt.Errorf("delete relation: %w", err)
+			return "", fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		if opts.MigrateTo != "" {
+			migrateTo := strings.TrimSpace(opts.MigrateTo)
+			if err := cyphersql.ValidateIdentifier("relationship type", migrateTo); err != nil {
+				return "", fmt.Errorf("invalid migrate_to relation %q: %w", migrateTo, err)
+			}
+			migrateSQL := `
+				UPDATE edges SET kind = ?
+				WHERE kind = ? COLLATE NOCASE
+				  AND from_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE)
+				  AND to_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE);
+			`
+			if _, err := tx.Exec(migrateSQL, migrateTo, relation, fromKind, toKind); err != nil {
+				return "", fmt.Errorf("migrate edges: %w", err)
+			}
+			if _, err := tx.Exec("DELETE FROM schema_relations WHERE rel_type = ? COLLATE NOCASE AND from_kind = ? COLLATE NOCASE AND to_kind = ? COLLATE NOCASE", relation, fromKind, toKind); err != nil {
+				return "", fmt.Errorf("delete schema relation: %w", err)
+			}
+			detail := fmt.Sprintf("migrated %d edges (%s)->(%s) to %s", edgeCount, fromKind, toKind, migrateTo)
+			if err := logSchemaChange(tx, "remove_relation", "relation", relation, detail); err != nil {
+				return "", fmt.Errorf("log schema change: %w", err)
+			}
+			if err := tx.Commit(); err != nil {
+				return "", fmt.Errorf("commit remove relation with migration: %w", err)
+			}
+			return fmt.Sprintf("Relationship (%s)-[:%s]->(%s) removed from schema, %d edges migrated to '%s'.", fromKind, relation, toKind, edgeCount, migrateTo), nil
+		}
+
+		if opts.Cascade {
+			deleteEdgesSQL := `
+				DELETE FROM edges 
+				WHERE kind = ? COLLATE NOCASE
+				  AND from_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE)
+				  AND to_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE);
+			`
+			if _, err := tx.Exec(deleteEdgesSQL, relation, fromKind, toKind); err != nil {
+				return "", fmt.Errorf("cascade delete edges: %w", err)
+			}
+		}
+
+		if _, err := tx.Exec("DELETE FROM schema_relations WHERE rel_type = ? COLLATE NOCASE AND from_kind = ? COLLATE NOCASE AND to_kind = ? COLLATE NOCASE", relation, fromKind, toKind); err != nil {
+			return "", fmt.Errorf("delete schema relation: %w", err)
+		}
+		detail := fmt.Sprintf("cascade=%v deleted %d edges between %s and %s", opts.Cascade, edgeCount, fromKind, toKind)
+		if err := logSchemaChange(tx, "remove_relation", "relation", relation, detail); err != nil {
+			return "", fmt.Errorf("log schema change: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return "", fmt.Errorf("commit remove relation: %w", err)
 		}
 		return fmt.Sprintf("Relationship (%s)-[:%s]->(%s) removed from schema.", fromKind, relation, toKind), nil
 
+	case "rename_relation":
+		relation = strings.TrimSpace(relation)
+		newRelation := strings.TrimSpace(opts.NewRelation)
+		fromKind = strings.TrimSpace(fromKind)
+		toKind = strings.TrimSpace(toKind)
+		if relation == "" || newRelation == "" {
+			return "", fmt.Errorf("'relation' and 'new_relation' are required for rename_relation")
+		}
+		if err := cyphersql.ValidateIdentifier("relationship type", newRelation); err != nil {
+			return "", err
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			return "", fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		var edgesUpdated int64
+		if fromKind != "" && toKind != "" {
+			if _, err := tx.Exec(`
+				UPDATE schema_relations 
+				SET rel_type = ? 
+				WHERE rel_type = ? COLLATE NOCASE 
+				  AND from_kind = ? COLLATE NOCASE 
+				  AND to_kind = ? COLLATE NOCASE
+			`, newRelation, relation, fromKind, toKind); err != nil {
+				return "", fmt.Errorf("update schema_relations: %w", err)
+			}
+
+			res, err := tx.Exec(`
+				UPDATE edges SET kind = ?
+				WHERE kind = ? COLLATE NOCASE
+				  AND from_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE)
+				  AND to_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE)
+			`, newRelation, relation, fromKind, toKind)
+			if err != nil {
+				return "", fmt.Errorf("update edges: %w", err)
+			}
+			edgesUpdated, _ = res.RowsAffected()
+		} else {
+			if _, err := tx.Exec("UPDATE schema_relations SET rel_type = ? WHERE rel_type = ? COLLATE NOCASE", newRelation, relation); err != nil {
+				return "", fmt.Errorf("update schema_relations: %w", err)
+			}
+			res, err := tx.Exec("UPDATE edges SET kind = ? WHERE kind = ? COLLATE NOCASE", newRelation, relation)
+			if err != nil {
+				return "", fmt.Errorf("update edges: %w", err)
+			}
+			edgesUpdated, _ = res.RowsAffected()
+		}
+
+		detail := fmt.Sprintf("renamed to %s (updated %d edges)", newRelation, edgesUpdated)
+		if err := logSchemaChange(tx, "rename_relation", "relation", relation, detail); err != nil {
+			return "", fmt.Errorf("log schema change: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return "", fmt.Errorf("commit rename relation: %w", err)
+		}
+		return fmt.Sprintf("Relationship '%s' renamed to '%s' (updated %d edges and schema rules).", relation, newRelation, edgesUpdated), nil
+
 	default:
-		return "", fmt.Errorf("unknown schema action '%s'. Allowed: add_kind, remove_kind, add_relation, remove_relation", action)
+		return "", fmt.Errorf("unknown schema action '%s'. Allowed: add_kind, remove_kind, rename_kind, add_relation, remove_relation, rename_relation", action)
 	}
 }
 
@@ -1211,7 +1913,13 @@ func main() {
 	dbPath := flag.String("db", "knowledge_graph.db", "Path to SQLite database file")
 	logPath := flag.String("log", "", "Path to debug log file")
 	strictSchema := flag.Bool("strict-schema", false, "Strictly enforce schema even if schema tables are empty")
+	allowSchemaEdit := flag.Bool("allow-schema-edit", false, "Allow schema modifications via graph_schema_define tool")
+	maxRows := flag.Int("max-rows", 1000, "Maximum number of rows returned by graph_query (0 = unlimited)")
 	flag.Parse()
+
+	if *maxRows >= 0 {
+		defaultMaxRows = *maxRows
+	}
 
 	var logger *log.Logger
 	if *logPath != "" {
@@ -1228,7 +1936,7 @@ func main() {
 		}
 	}
 
-	logMsg("Starting cypher-mcp with db=%s, strict-schema=%v", *dbPath, *strictSchema)
+	logMsg("Starting cypher-mcp with db=%s, strict-schema=%v, allow-schema-edit=%v", *dbPath, *strictSchema, *allowSchemaEdit)
 
 	db, err := initDatabase(*dbPath)
 	if err != nil {
@@ -1244,12 +1952,16 @@ func main() {
 	}
 	defer dbRO.Close()
 
-	runServer(os.Stdin, os.Stdout, db, dbRO, logger, *strictSchema)
+	runServerWithConfig(os.Stdin, os.Stdout, db, dbRO, logger, *strictSchema, *allowSchemaEdit)
 }
 
-func runServer(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger, strictSchema ...bool) {
-	isStrict := len(strictSchema) > 0 && strictSchema[0]
+func runServer(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger, flags ...bool) {
+	strict := len(flags) > 0 && flags[0]
+	allowEdit := len(flags) > 1 && flags[1]
+	runServerWithConfig(in, out, db, dbRO, logger, strict, allowEdit)
+}
 
+func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger, isStrict, allowSchemaEdit bool) {
 	logMsg := func(format string, v ...any) {
 		if logger != nil {
 			logger.Printf(format, v...)
@@ -1303,7 +2015,7 @@ func runServer(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger
 							},
 							"serverInfo": map[string]any{
 								"name":    "cypher-graph-mcp",
-								"version": "0.3.0",
+								"version": "0.3.1",
 							},
 						},
 					})
@@ -1373,7 +2085,16 @@ func runServer(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger
 					case "graph_query":
 						query, _ := params.Arguments["query"].(string)
 						queryParams, _ := params.Arguments["params"].(map[string]any)
-						outText, callErr = handleGraphQuery(dbRO, query, queryParams)
+						effectiveLimit := defaultMaxRows
+						if lVal, ok := params.Arguments["limit"]; ok {
+							switch v := lVal.(type) {
+							case float64:
+								effectiveLimit = int(v)
+							case int:
+								effectiveLimit = v
+							}
+						}
+						outText, callErr = handleGraphQuery(dbRO, query, queryParams, effectiveLimit)
 
 					case "graph_search":
 						query, _ := params.Arguments["query"].(string)
@@ -1406,14 +2127,22 @@ func runServer(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger
 						id, _ := params.Arguments["id"].(string)
 						kind, _ := params.Arguments["kind"].(string)
 						props, _ := params.Arguments["properties"].(map[string]any)
-						outText, callErr = handleSetNode(db, id, kind, props, isStrict)
+						merge := true
+						if mVal, ok := params.Arguments["merge"].(bool); ok {
+							merge = mVal
+						}
+						outText, callErr = handleSetNode(db, id, kind, props, isStrict, merge)
 
 					case "graph_set_edge":
 						from, _ := params.Arguments["from"].(string)
 						to, _ := params.Arguments["to"].(string)
 						kind, _ := params.Arguments["kind"].(string)
 						props, _ := params.Arguments["properties"].(map[string]any)
-						outText, callErr = handleSetEdge(db, from, to, kind, props, isStrict)
+						merge := true
+						if mVal, ok := params.Arguments["merge"].(bool); ok {
+							merge = mVal
+						}
+						outText, callErr = handleSetEdge(db, from, to, kind, props, isStrict, merge)
 
 					case "graph_delete_node":
 						id, _ := params.Arguments["id"].(string)
@@ -1429,7 +2158,18 @@ func runServer(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger
 						fromKind, _ := params.Arguments["from_kind"].(string)
 						toKind, _ := params.Arguments["to_kind"].(string)
 						description, _ := params.Arguments["description"].(string)
-						outText, callErr = handleSchemaDefine(db, action, kind, relation, fromKind, toKind, description)
+						newKind, _ := params.Arguments["new_kind"].(string)
+						newRelation, _ := params.Arguments["new_relation"].(string)
+						cascade, _ := params.Arguments["cascade"].(bool)
+						migrateTo, _ := params.Arguments["migrate_to"].(string)
+						opts := SchemaDefineOptions{
+							AllowSchemaEdit: allowSchemaEdit,
+							Cascade:         cascade,
+							MigrateTo:       migrateTo,
+							NewKind:         newKind,
+							NewRelation:     newRelation,
+						}
+						outText, callErr = handleSchemaDefine(db, action, kind, relation, fromKind, toKind, description, opts)
 
 					default:
 						callErr = fmt.Errorf("unknown tool: %s", params.Name)
