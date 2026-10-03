@@ -24,6 +24,9 @@ Traditional AI agent memory architectures suffer from major tradeoffs:
 3. **Native Agent Fluency:** LLMs intuitively generate OpenCypher graph traversals (`MATCH (p:Person)-[:OWES]->(o) RETURN o`) with near 100% accuracy.
 4. **ACID Relational Foundation:** Single standard SQLite `.db` file powered by relational B-Tree indexes and JSON1.
 
+### Scaling Beyond Local Storage
+If you need a bigger graph for your organization, connect [`cypher-sql-go`](https://github.com/vmikhailov/cypher-sql-go) directly to your **ClickHouse** cluster and load the entire organization there (billions of nodes/edges across microservices, ASTs, IAM trees, and git commits) with vectorized OLAP throughput.
+
 ---
 
 ## MCP Tools
