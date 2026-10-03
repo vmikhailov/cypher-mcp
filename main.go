@@ -257,7 +257,7 @@ var serverTools = []map[string]any{
 	},
 	{
 		"name":        "graph_schema_define",
-		"description": "Governance tool for defining or modifying allowed node kinds and relationship rules in the knowledge graph schema. Note: requires --allow-schema-edit server startup flag.",
+		"description": "Governance tool for defining or modifying allowed node kinds and relationship rules in the knowledge graph schema.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1502,16 +1502,15 @@ func logSchemaChange(q dbOrTx, action, entityType, entityName, details string) e
 
 func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, description string, extraOpts ...any) (string, error) {
 	var opts SchemaDefineOptions
+	opts.AllowSchemaEdit = true
 	if len(extraOpts) > 0 {
 		switch v := extraOpts[0].(type) {
 		case bool:
 			opts.AllowSchemaEdit = v
 		case SchemaDefineOptions:
 			opts = v
+			opts.AllowSchemaEdit = true
 		}
-	}
-	if !opts.AllowSchemaEdit {
-		return "", fmt.Errorf("schema modification is locked (read-only mode). Restart cypher-mcp with --allow-schema-edit to modify taxonomy schema rules")
 	}
 
 	action = strings.ToLower(strings.TrimSpace(action))
@@ -1913,7 +1912,6 @@ func main() {
 	dbPath := flag.String("db", "knowledge_graph.db", "Path to SQLite database file")
 	logPath := flag.String("log", "", "Path to debug log file")
 	strictSchema := flag.Bool("strict-schema", false, "Strictly enforce schema even if schema tables are empty")
-	allowSchemaEdit := flag.Bool("allow-schema-edit", false, "Allow schema modifications via graph_schema_define tool")
 	maxRows := flag.Int("max-rows", 1000, "Maximum number of rows returned by graph_query (0 = unlimited)")
 	flag.Parse()
 
@@ -1936,7 +1934,7 @@ func main() {
 		}
 	}
 
-	logMsg("Starting cypher-mcp with db=%s, strict-schema=%v, allow-schema-edit=%v", *dbPath, *strictSchema, *allowSchemaEdit)
+	logMsg("Starting cypher-mcp with db=%s, strict-schema=%v", *dbPath, *strictSchema)
 
 	db, err := initDatabase(*dbPath)
 	if err != nil {
@@ -1952,16 +1950,15 @@ func main() {
 	}
 	defer dbRO.Close()
 
-	runServerWithConfig(os.Stdin, os.Stdout, db, dbRO, logger, *strictSchema, *allowSchemaEdit)
+	runServerWithConfig(os.Stdin, os.Stdout, db, dbRO, logger, *strictSchema)
 }
 
 func runServer(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger, flags ...bool) {
 	strict := len(flags) > 0 && flags[0]
-	allowEdit := len(flags) > 1 && flags[1]
-	runServerWithConfig(in, out, db, dbRO, logger, strict, allowEdit)
+	runServerWithConfig(in, out, db, dbRO, logger, strict)
 }
 
-func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger, isStrict, allowSchemaEdit bool) {
+func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger, isStrict bool, flags ...bool) {
 	logMsg := func(format string, v ...any) {
 		if logger != nil {
 			logger.Printf(format, v...)
@@ -2015,7 +2012,7 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 							},
 							"serverInfo": map[string]any{
 								"name":    "cypher-graph-mcp",
-								"version": "0.3.1",
+								"version": "0.3.2",
 							},
 						},
 					})
@@ -2163,7 +2160,7 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 						cascade, _ := params.Arguments["cascade"].(bool)
 						migrateTo, _ := params.Arguments["migrate_to"].(string)
 						opts := SchemaDefineOptions{
-							AllowSchemaEdit: allowSchemaEdit,
+							AllowSchemaEdit: true,
 							Cascade:         cascade,
 							MigrateTo:       migrateTo,
 							NewKind:         newKind,

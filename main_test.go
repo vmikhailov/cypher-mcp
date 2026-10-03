@@ -894,25 +894,16 @@ func TestSchemaGovernanceAndValidation(t *testing.T) {
 		t.Fatalf("permissive node set failed: %v", err)
 	}
 
-	// 2. Mutation without allowSchemaEdit=true must fail (read-only mode)
-	_, err = handleSchemaDefine(db, "add_kind", "Person", "", "", "", "Human individual", false)
-	if err == nil {
-		t.Fatalf("expected schema edit to fail without allowSchemaEdit, but succeeded")
-	}
-	if !strings.Contains(err.Error(), "schema modification is locked") {
-		t.Fatalf("unexpected lock error: %v", err)
-	}
-
-	// 3. Define schema rules with allowSchemaEdit=true
-	_, err = handleSchemaDefine(db, "add_kind", "Person", "", "", "", "Human individual", true)
+	// 2. Define schema rules (schema editing is always allowed by default)
+	_, err = handleSchemaDefine(db, "add_kind", "Person", "", "", "", "Human individual")
 	if err != nil {
 		t.Fatalf("add_kind Person failed: %v", err)
 	}
-	_, err = handleSchemaDefine(db, "add_kind", "Apartment", "", "", "", "Living residence", true)
+	_, err = handleSchemaDefine(db, "add_kind", "Apartment", "", "", "", "Living residence")
 	if err != nil {
 		t.Fatalf("add_kind Apartment failed: %v", err)
 	}
-	_, err = handleSchemaDefine(db, "add_relation", "", "RENTS", "Person", "Apartment", "Lease agreement", true)
+	_, err = handleSchemaDefine(db, "add_relation", "", "RENTS", "Person", "Apartment", "Lease agreement")
 	if err != nil {
 		t.Fatalf("add_relation RENTS failed: %v", err)
 	}
