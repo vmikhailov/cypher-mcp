@@ -945,7 +945,45 @@ func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int) (
 		}
 	}
 
-	// 2. If 0 results or short query (< 3 chars), fallback to LIKE on nodes table (values only)
+	// 2. Inflected wordforms fallback (e.g. Russian cases/declensions):
+	// Trigram searches for substring, so 'Михайлов' matches 'Михайлова', but 'Михайлова' does not match 'Михайлов'.
+	// If 0 results, retry with 1 and then 2 characters trimmed from the end of words longer than 5 characters.
+	if len(items) == 0 {
+		for trimLen := 1; trimLen <= 2; trimLen++ {
+			var stemmedTokens []string
+			hasStemmed := false
+			for _, t := range tokens {
+				r := []rune(t)
+				if len(r) > 5 {
+					stemmed := string(r[:len(r)-trimLen])
+					if len([]rune(stemmed)) >= 3 {
+						stemmedTokens = append(stemmedTokens, fmt.Sprintf("\"%s\"", stemmed))
+						hasStemmed = true
+					}
+				} else if len(r) >= 3 {
+					stemmedTokens = append(stemmedTokens, fmt.Sprintf("\"%s\"", t))
+				}
+			}
+			if !hasStemmed {
+				break
+			}
+			ftsAnd := strings.Join(stemmedTokens, " AND ")
+			var err error
+			items, err = executeFTS(ftsAnd)
+			if err == nil && len(items) > 0 {
+				break
+			}
+			if len(stemmedTokens) > 1 {
+				ftsOr := strings.Join(stemmedTokens, " OR ")
+				items, _ = executeFTS(ftsOr)
+				if len(items) > 0 {
+					break
+				}
+			}
+		}
+	}
+
+	// 3. If 0 results or short query (< 3 chars), fallback to LIKE on nodes table (values only)
 	if len(items) == 0 {
 		likePat := "%" + strings.TrimSpace(query) + "%"
 		likeSQL := `
@@ -960,27 +998,62 @@ func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int) (
 			  AND (? = '' OR kind = ?)
 			LIMIT ?;
 		`
-		rows, err := db.Query(likeSQL, likePat, likePat, kindFilter, kindFilter, limit)
+		runLike := func(pat string) ([]SearchResultItem, error) {
+			rows, err := db.Query(likeSQL, pat, pat, kindFilter, kindFilter, limit)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+			var res []SearchResultItem
+			for rows.Next() {
+				var item SearchResultItem
+				var propsRaw string
+				if err := rows.Scan(&item.ID, &item.Kind, &propsRaw, &item.Rank); err != nil {
+					return nil, err
+				}
+				var parsedProps any
+				if err := json.Unmarshal([]byte(propsRaw), &parsedProps); err == nil {
+					item.Properties = parsedProps
+				} else {
+					item.Properties = propsRaw
+				}
+				res = append(res, item)
+			}
+			if err := rows.Err(); err != nil {
+				return nil, err
+			}
+			return res, nil
+		}
+
+		var err error
+		items, err = runLike(likePat)
 		if err != nil {
 			return "", fmt.Errorf("fallback search query error: %w", err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var item SearchResultItem
-			var propsRaw string
-			if err := rows.Scan(&item.ID, &item.Kind, &propsRaw, &item.Rank); err != nil {
-				return "", fmt.Errorf("fallback search scan error: %w", err)
+
+		// If exact LIKE had 0 results, retry with stemmed words
+		if len(items) == 0 {
+			for trimLen := 1; trimLen <= 2; trimLen++ {
+				var stemmedWords []string
+				hasStemmed := false
+				for _, t := range tokens {
+					r := []rune(t)
+					if len(r) > 5 {
+						stemmedWords = append(stemmedWords, string(r[:len(r)-trimLen]))
+						hasStemmed = true
+					} else {
+						stemmedWords = append(stemmedWords, t)
+					}
+				}
+				if !hasStemmed {
+					break
+				}
+				stemmedLike := "%" + strings.Join(stemmedWords, "%") + "%"
+				items, err = runLike(stemmedLike)
+				if err == nil && len(items) > 0 {
+					break
+				}
 			}
-			var parsedProps any
-			if err := json.Unmarshal([]byte(propsRaw), &parsedProps); err == nil {
-				item.Properties = parsedProps
-			} else {
-				item.Properties = propsRaw
-			}
-			items = append(items, item)
-		}
-		if err := rows.Err(); err != nil {
-			return "", fmt.Errorf("fallback search iteration error: %w", err)
 		}
 	}
 
@@ -2012,7 +2085,7 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 							},
 							"serverInfo": map[string]any{
 								"name":    "cypher-graph-mcp",
-								"version": "0.3.2",
+								"version": "0.3.3",
 							},
 						},
 					})

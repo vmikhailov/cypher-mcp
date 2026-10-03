@@ -688,10 +688,19 @@ func TestVariableLengthRelationships_UnanchoredRequiresLimit(t *testing.T) {
 		t.Fatalf("expected error mentioning anchored, got: %v", err)
 	}
 
-	// 3. Anchored with label must succeed
+	// 3. Label-only without property anchor must fail
 	_, err = handleGraphQuery(dbRO, "MATCH (a:Person)-[*1..2]->(b) RETURN a, b LIMIT 10")
+	if err == nil {
+		t.Fatalf("expected label-only varlen query to fail without property anchor, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "anchored") {
+		t.Fatalf("expected error mentioning anchored, got: %v", err)
+	}
+
+	// 4. Anchored with property filter must succeed
+	_, err = handleGraphQuery(dbRO, "MATCH (a:Person {name: 'Alice'})-[*1..2]->(b) RETURN a, b LIMIT 10")
 	if err != nil {
-		t.Fatalf("expected anchored varlen query to succeed, got error: %v", err)
+		t.Fatalf("expected property-anchored varlen query to succeed, got error: %v", err)
 	}
 }
 
@@ -1055,13 +1064,15 @@ func TestSchema_V030_AllFixes(t *testing.T) {
 		t.Fatalf("search for JSON key 'role' incorrectly matched node p1: %s", searchKeyRes)
 	}
 
-	// Searching for actual value 'Михайлов' should find p1
-	searchValRes, err := handleGraphSearch(dbRO, "Михайлов", "", 10)
-	if err != nil {
-		t.Fatalf("search 'Михайлова' failed: %v", err)
-	}
-	if !strings.Contains(searchValRes, `"p1"`) {
-		t.Fatalf("expected trigram search 'Михайлова' to match 'Михайлов' in p1, got: %s", searchValRes)
+	// Searching with inflected Russian forms ('Михайлова', 'Михайловым') should find p1 ('Михайлов')
+	for _, inflected := range []string{"Михайлова", "Михайловым"} {
+		searchValRes, err := handleGraphSearch(dbRO, inflected, "", 10)
+		if err != nil {
+			t.Fatalf("search '%s' failed: %v", inflected, err)
+		}
+		if !strings.Contains(searchValRes, `"id": "p1"`) {
+			t.Fatalf("expected inflected search '%s' to match 'Михайлов' in p1, got: %s", inflected, searchValRes)
+		}
 	}
 
 	// 5. P2: Empty search returns results: []

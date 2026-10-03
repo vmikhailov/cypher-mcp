@@ -3,7 +3,7 @@ module github.com/vmikhailov/cypher-mcp
 go 1.22.0
 
 require (
-	github.com/vmikhailov/cypher-sql-go v0.3.3
+	github.com/vmikhailov/cypher-sql-go v0.3.4
 	modernc.org/sqlite v1.35.0
 )
 
