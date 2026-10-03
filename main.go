@@ -299,10 +299,7 @@ func stripCommentsAndSpace(s string) string {
 func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]any) (string, error) {
 	start := time.Now()
 
-	// Defense-in-depth: check variable-length paths and unsafe identifiers
-	if strings.Contains(cypherQuery, "-[*") || strings.Contains(cypherQuery, "*..") {
-		return "", fmt.Errorf("variable-length relationships are not yet supported")
-	}
+	// Defense-in-depth: check unsafe identifiers
 	for _, m := range backtickRegex.FindAllStringSubmatch(cypherQuery, -1) {
 		if !safeIdentifierRegex.MatchString(m[1]) {
 			return "", fmt.Errorf("invalid identifier %q: only alphanumeric characters and underscores are permitted", m[1])

@@ -252,7 +252,7 @@ func TestVariableLengthRelationships_ErrorReturned(t *testing.T) {
 	}
 	defer dbRO.Close()
 
-	_, err = handleGraphQuery(dbRO, "MATCH (p:Person)-[*1..3]->(a:Apartment) RETURN p, a")
+	_, err = handleGraphQuery(dbRO, "MATCH (p:Person)-[*1..3]-(a:Apartment) RETURN p, a")
 	if err == nil {
 		t.Fatalf("expected error for variable-length query, got nil")
 	}
@@ -536,4 +536,65 @@ func TestServer_MalformedJSON_ReturnsParseError(t *testing.T) {
 	}
 
 	<-done
+}
+
+func TestVariableLengthRelationships_Success(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "cypher-mcp-varlen-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "varlen_graph.db")
+	db, err := initDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init database: %v", err)
+	}
+	defer db.Close()
+
+	dbRO, err := initRODatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to init ro database: %v", err)
+	}
+	defer dbRO.Close()
+
+	// Seed nodes: Anton -> Slava -> Istanbul Apt, and cycle Slava -> Anton
+	if _, err := handleSetNode(db, "p:anton", "Person", map[string]any{"name": "Anton"}); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if _, err := handleSetNode(db, "p:slava", "Person", map[string]any{"name": "Slava"}); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if _, err := handleSetNode(db, "apt:1", "Apartment", map[string]any{"name": "Istanbul Apt"}); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	if _, err := handleSetEdge(db, "p:anton", "p:slava", "KNOWS", nil); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if _, err := handleSetEdge(db, "p:slava", "apt:1", "OWNS", nil); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if _, err := handleSetEdge(db, "p:slava", "p:anton", "KNOWS", nil); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	resStr, err := handleGraphQuery(dbRO, "MATCH (a:Person {name: 'Anton'})-[*1..3]->(b:Apartment) RETURN a.name, b.name")
+	if err != nil {
+		t.Fatalf("handleGraphQuery failed: %v", err)
+	}
+
+	var qRes struct {
+		Count   int              `json:"count"`
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(resStr), &qRes); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if qRes.Count != 1 {
+		t.Fatalf("expected 1 result, got %d", qRes.Count)
+	}
+	if qRes.Results[0]["a.name"] != "Anton" || qRes.Results[0]["b.name"] != "Istanbul Apt" {
+		t.Fatalf("unexpected results: %+v", qRes.Results)
+	}
 }
