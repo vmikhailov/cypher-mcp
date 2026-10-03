@@ -58,6 +58,10 @@ var serverTools = []map[string]any{
 					"type":        "string",
 					"description": "OpenCypher query (e.g., MATCH (p:Person)-[:LIVES_AT]->(a:Apartment) RETURN p, a)",
 				},
+				"params": map[string]any{
+					"type":        "object",
+					"description": "Optional parameters to pass to the query (e.g., {\"name\": \"Alice\"})",
+				},
 			},
 			"required": []string{"query"},
 		},
@@ -159,11 +163,12 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 			properties TEXT NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS edges (
-			from_id TEXT NOT NULL,
-			to_id TEXT NOT NULL,
+			from_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+			to_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
 			kind TEXT NOT NULL,
 			properties TEXT NOT NULL
 		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON edges(from_id, to_id, kind);
 		CREATE INDEX IF NOT EXISTS idx_edges_from_kind ON edges(from_id, kind);
 		CREATE INDEX IF NOT EXISTS idx_edges_to_kind ON edges(to_id, kind);
 		CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
@@ -175,16 +180,139 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-func handleGraphQuery(db *sql.DB, cypherQuery string) (string, error) {
+func initRODatabase(dbPath string) (*sql.DB, error) {
+	sep := "?"
+	if strings.Contains(dbPath, "?") {
+		sep = "&"
+	}
+	dsn := fmt.Sprintf("%s%s_query_only=1&_busy_timeout=5000&_defensive=1", dbPath, sep)
+	dbRO, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite ro db: %w", err)
+	}
+
+	if _, err := dbRO.Exec("PRAGMA query_only = ON;"); err != nil {
+		return nil, fmt.Errorf("set ro pragma query_only: %w", err)
+	}
+	return dbRO, nil
+}
+
+func hasMultipleStatements(sql string) bool {
+	inSingleQuote := false
+	inDoubleQuote := false
+	n := len(sql)
+	for i := 0; i < n; i++ {
+		ch := sql[i]
+		if inSingleQuote {
+			if ch == '\'' {
+				if i+1 < n && sql[i+1] == '\'' {
+					i++ // escaped quote ''
+				} else {
+					inSingleQuote = false
+				}
+			}
+			continue
+		}
+		if inDoubleQuote {
+			if ch == '"' {
+				if i+1 < n && sql[i+1] == '"' {
+					i++ // escaped quote ""
+				} else {
+					inDoubleQuote = false
+				}
+			}
+			continue
+		}
+
+		if ch == '\'' {
+			inSingleQuote = true
+			continue
+		}
+		if ch == '"' {
+			inDoubleQuote = true
+			continue
+		}
+		if ch == '-' && i+1 < n && sql[i+1] == '-' {
+			i += 2
+			for i < n && sql[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if ch == '/' && i+1 < n && sql[i+1] == '*' {
+			i += 2
+			for i+1 < n && !(sql[i] == '*' && sql[i+1] == '/') {
+				i++
+			}
+			i++
+			continue
+		}
+
+		if ch == ';' {
+			rem := sql[i+1:]
+			rem = stripCommentsAndSpace(rem)
+			if len(rem) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stripCommentsAndSpace(s string) string {
+	n := len(s)
+	i := 0
+	var sb strings.Builder
+	for i < n {
+		if s[i] == ' ' || s[i] == '	' || s[i] == '\r' || s[i] == '\n' || s[i] == ';' {
+			i++
+			continue
+		}
+		if s[i] == '-' && i+1 < n && s[i+1] == '-' {
+			i += 2
+			for i < n && s[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if s[i] == '/' && i+1 < n && s[i+1] == '*' {
+			i += 2
+			for i+1 < n && !(s[i] == '*' && s[i+1] == '/') {
+				i++
+			}
+			i += 2
+			continue
+		}
+		sb.WriteByte(s[i])
+		i++
+	}
+	return sb.String()
+}
+
+func handleGraphQuery(db *sql.DB, cypherQuery string, queryParams ...map[string]any) (string, error) {
 	start := time.Now()
-	compiled, err := cyphersql.Compile(cypherQuery)
+	var params map[string]any
+	if len(queryParams) > 0 && queryParams[0] != nil {
+		params = queryParams[0]
+	}
+
+	compiled, err := cyphersql.CompileWithParams(cypherQuery, params)
 	if err != nil {
 		return "", fmt.Errorf("cypher compile error: %w", err)
 	}
 	compileDuration := time.Since(start)
 
+	if hasMultipleStatements(compiled.SQL) {
+		return "", fmt.Errorf("multiple SQL statements are not permitted")
+	}
+
+	var sqlArgs []any
+	for k, v := range compiled.Params {
+		sqlArgs = append(sqlArgs, sql.Named(k, v))
+	}
+
 	qStart := time.Now()
-	rows, err := db.Query(compiled.SQL)
+	rows, err := db.Query(compiled.SQL, sqlArgs...)
 	if err != nil {
 		return "", fmt.Errorf("sql execution error (%s): %w", compiled.SQL, err)
 	}
@@ -264,14 +392,38 @@ func handleSetEdge(db *sql.DB, from, to, kind string, props map[string]any) (str
 		return "", fmt.Errorf("marshal properties: %w", err)
 	}
 
-	delQuery := `DELETE FROM edges WHERE from_id = ? AND to_id = ? AND kind = ?;`
-	if _, err := db.Exec(delQuery, from, to, kind); err != nil {
-		return "", fmt.Errorf("delete existing edge: %w", err)
+	tx, err := db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Verify both source and target nodes exist (prevent dangling edges)
+	var fromExists, toExists bool
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM nodes WHERE id = ?)", from).Scan(&fromExists); err != nil {
+		return "", fmt.Errorf("check from node: %w", err)
+	}
+	if !fromExists {
+		return "", fmt.Errorf("source node '%s' does not exist", from)
 	}
 
-	insQuery := `INSERT INTO edges (from_id, to_id, kind, properties) VALUES (?, ?, ?, ?);`
-	if _, err := db.Exec(insQuery, from, to, kind, string(propsJSON)); err != nil {
-		return "", fmt.Errorf("insert edge (%s)-[%s]->(%s): %w", from, kind, to, err)
+	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM nodes WHERE id = ?)", to).Scan(&toExists); err != nil {
+		return "", fmt.Errorf("check to node: %w", err)
+	}
+	if !toExists {
+		return "", fmt.Errorf("target node '%s' does not exist", to)
+	}
+
+	upsertQuery := `
+		INSERT INTO edges (from_id, to_id, kind, properties) VALUES (?, ?, ?, ?)
+		ON CONFLICT(from_id, to_id, kind) DO UPDATE SET properties = excluded.properties;
+	`
+	if _, err := tx.Exec(upsertQuery, from, to, kind, string(propsJSON)); err != nil {
+		return "", fmt.Errorf("upsert edge (%s)-[%s]->(%s): %w", from, kind, to, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit edge upsert: %w", err)
 	}
 
 	return fmt.Sprintf("Edge (%s)-[:%s]->(%s) saved successfully.", from, kind, to), nil
@@ -375,6 +527,13 @@ func main() {
 		log.Fatalf("database init failed: %v", err)
 	}
 	defer db.Close()
+
+	dbRO, err := initRODatabase(*dbPath)
+	if err != nil {
+		logMsg("RO Database init failed: %v", err)
+		log.Fatalf("ro database init failed: %v", err)
+	}
+	defer dbRO.Close()
 
 	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
@@ -498,7 +657,8 @@ func main() {
 			switch params.Name {
 			case "graph_query":
 				query, _ := params.Arguments["query"].(string)
-				outText, callErr = handleGraphQuery(db, query)
+				queryParams, _ := params.Arguments["params"].(map[string]any)
+				outText, callErr = handleGraphQuery(dbRO, query, queryParams)
 
 			case "graph_set_node":
 				id, _ := params.Arguments["id"].(string)
@@ -518,7 +678,7 @@ func main() {
 				outText, callErr = handleDeleteNode(db, id)
 
 			case "graph_schema":
-				outText, callErr = handleSchema(db)
+				outText, callErr = handleSchema(dbRO)
 
 			default:
 				callErr = fmt.Errorf("unknown tool: %s", params.Name)
