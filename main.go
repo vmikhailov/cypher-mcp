@@ -1303,7 +1303,7 @@ func runServer(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *log.Logger
 							},
 							"serverInfo": map[string]any{
 								"name":    "cypher-graph-mcp",
-								"version": "1.1.0",
+								"version": "0.3.0",
 							},
 						},
 					})
