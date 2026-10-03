@@ -3,8 +3,8 @@ module github.com/vmikhailov/cypher-mcp
 go 1.22.0
 
 require (
-	github.com/vmikhailov/cypher-sql-go v0.2.0
-	modernc.org/sqlite v1.60.1
+	github.com/vmikhailov/cypher-sql-go v0.3.0
+	modernc.org/sqlite v1.35.0
 )
 
 require (
@@ -13,8 +13,9 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	modernc.org/libc v1.77.1 // indirect
+	golang.org/x/exp v0.0.0-20230315142452-642cacee5cc0 // indirect
+	golang.org/x/sys v0.28.0 // indirect
+	modernc.org/libc v1.61.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.12.1 // indirect
+	modernc.org/memory v1.8.2 // indirect
 )
