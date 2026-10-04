@@ -24,6 +24,9 @@ def chdir(path):
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "benchmarks"))
+sys.path.insert(0, str(ROOT / "scripts"))
 SPEC = importlib.util.spec_from_file_location("dataset_index_metaqa", ROOT / "scripts" / "index_metaqa.py")
 assert SPEC is not None and SPEC.loader is not None
 index = importlib.util.module_from_spec(SPEC)

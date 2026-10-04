@@ -53,6 +53,7 @@ jobs:
         run: go vet ./...
 
       - name: Staticcheck
+        if: matrix.go == '1.26.8'
         run: go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
       - name: Run Tests
