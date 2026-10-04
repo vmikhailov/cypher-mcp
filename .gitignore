@@ -18,6 +18,8 @@ dist/
 *.db-wal
 *.db-shm
 data/
+.env
+*.env
 
 # IDEs
 .idea/

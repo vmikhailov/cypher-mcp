@@ -2,21 +2,17 @@ import os
 import sys
 
 def get_api_key():
-    """Retrieve Google API key from environment variable or standard local env files."""
+    """Retrieve Google API key from environment variable or standard local .env files."""
     key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if key:
         return key
     candidate_paths = [
         os.environ.get("ENV_PATH"),
-        os.environ.get("HERMES_ENV_PATH"),
         os.path.join(os.getcwd(), ".env"),
         os.path.join(os.path.dirname(__file__), "..", ".env"),
         os.path.join(os.path.dirname(__file__), ".env"),
         os.path.expanduser("~/.env"),
     ]
-    localapp = os.environ.get("LOCALAPPDATA")
-    if localapp:
-        candidate_paths.append(os.path.join(localapp, "hermes", ".env"))
     for p in candidate_paths:
         if p and os.path.exists(p):
             try:

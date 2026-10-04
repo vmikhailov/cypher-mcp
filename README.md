@@ -131,7 +131,7 @@ Add to `config.yaml`:
 mcp_servers:
   cypher_graph:
     command: "cypher-mcp"
-    args: ["--db", "~/.hermes/knowledge_graph.db"]
+    args: ["--db", "knowledge_graph.db"]
 ```
 
 ---

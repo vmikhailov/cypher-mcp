@@ -86,13 +86,10 @@ func getEmbeddingAPIKey() string {
 		return k
 	}
 
-	// Try reading from ~/.hermes/.env or %LOCALAPPDATA%/hermes/.env
+	// Try reading from .env in current directory or user home directory
 	candidates := []string{".env"}
 	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, ".hermes", ".env"),
-			filepath.Join(home, "AppData", "Local", "hermes", ".env"),
-		)
+		candidates = append(candidates, filepath.Join(home, ".env"))
 	}
 
 	for _, path := range candidates {
