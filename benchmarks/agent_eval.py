@@ -18,22 +18,15 @@ import subprocess
 import urllib.request
 import urllib.error
 
-# Ensure directory exists
-os.makedirs(r"C:\Work\Personal\cypher-mcp\benchmarks", exist_ok=True)
+sys.path.insert(0, os.path.dirname(__file__))
+from common import get_api_key, get_paths
+
+REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
 # 1. Load API Key
-env_path = r"C:\Users\viach\AppData\Local\hermes\.env"
-api_key = None
-if os.path.exists(env_path):
-    with open(env_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("GOOGLE_API_KEY="):
-                api_key = line.split("=", 1)[1].strip().strip("\"'")
-                break
-
+api_key = get_api_key()
 if not api_key:
-    print("Error: GOOGLE_API_KEY not found in .env")
+    print("Error: GOOGLE_API_KEY not found in environment or .env file.")
     sys.exit(1)
 
 # 2. Knowledge Base Data
@@ -94,7 +87,7 @@ GRAPH_EDGES = [
 ]
 
 # 3. Setup SQLite Database for Cypher MCP
-db_path = r"C:\Users\viach\AppData\Local\hermes\cache\scratch\agent_eval.db"
+db_path = os.path.join(DATA_DIR, "agent_eval.db")
 if os.path.exists(db_path):
     try:
         os.remove(db_path)
@@ -103,7 +96,7 @@ if os.path.exists(db_path):
 
 # Start cypher-mcp process
 mcp_proc = subprocess.Popen(
-    [r"C:\Work\Personal\cypher-mcp\bin\cypher-mcp.exe", "--db", db_path],
+    [BIN_PATH, "--db", db_path],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
@@ -366,7 +359,7 @@ for task in EVAL_TASKS:
 mcp_proc.kill()
 
 # 6. Generate Markdown Report
-report_path = r"C:/Work/Personal/cypher-mcp/benchmarks/reports/AGENT_EVALS.md"
+report_path = os.path.join(REPORTS_DIR, "AGENT_EVALS.md")
 with open(report_path, "w", encoding="utf-8") as f:
     f.write("# Agent Utility Evaluation: Cypher MCP vs. Vector/Document RAG\n\n")
     f.write("Empirical evaluation using an autonomous AI agent powered by **Google Gemini 3.8 Flash** with live function calling across two memory architectures:\n\n")

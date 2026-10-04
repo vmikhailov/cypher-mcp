@@ -16,29 +16,25 @@ import subprocess
 import urllib.request
 import urllib.error
 
-# 1. Load API Key
-env_path = r"C:\Users\viach\AppData\Local\hermes\.env"
-api_key = None
-if os.path.exists(env_path):
-    with open(env_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("GOOGLE_API_KEY="):
-                api_key = line.split("=", 1)[1].strip().strip("\"'")
-                break
+sys.path.insert(0, os.path.dirname(__file__))
+from common import get_api_key, get_paths
 
+REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
+DB_PATH = os.path.join(DATA_DIR, "metaqa.db")
+
+# 1. Load API Key
+api_key = get_api_key()
 if not api_key:
-    print("Error: GOOGLE_API_KEY not found in .env")
+    print("Error: GOOGLE_API_KEY not found in environment or .env file.")
     sys.exit(1)
 
-DB_PATH = r"C:\Work\Personal\cypher-mcp\data\metaqa.db"
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
 
 # 2. Tool Implementations
 
 # A. Graph Agent: cypher-mcp process
 mcp_proc = subprocess.Popen(
-    [r"C:\Work\Personal\cypher-mcp\bin\cypher-mcp.exe", "--db", DB_PATH],
+    [BIN_PATH, "--db", DB_PATH],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
@@ -259,7 +255,7 @@ mcp_proc.kill()
 con_fts.close()
 
 # 6. Generate Markdown Report
-report_path = r"C:/Work/Personal/cypher-mcp/benchmarks/reports/METAQA_BENCHMARK_REPORT.md"
+report_path = os.path.join(REPORTS_DIR, "METAQA_BENCHMARK_REPORT.md")
 with open(report_path, "w", encoding="utf-8") as f:
     f.write("# MetaQA Multi-Hop QA Benchmark: cypher-mcp vs Text RAG\n\n")
     f.write("Empirical benchmark on the standard **MetaQA** movie knowledge graph:\n")

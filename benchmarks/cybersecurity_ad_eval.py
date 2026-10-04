@@ -6,22 +6,18 @@ import math
 import urllib.request
 import subprocess
 
-ENV_PATH = r"C:\Users\viach\AppData\Local\hermes\.env"
-DB_PATH = r"C:\Work\Personal\cypher-mcp\data\cybersecurity_ad.db"
-RAW_PATH = r"C:\Work\Personal\cypher-mcp\data\cybersecurity_raw.json"
-VEC_CACHE = r"C:\Work\Personal\cypher-mcp\data\cybersecurity_ad_vectors.json"
-BIN_PATH = r"C:\Work\Personal\cypher-mcp\bin\cypher-mcp.exe"
+sys.path.insert(0, os.path.dirname(__file__))
+from common import get_api_key, get_paths
+
+REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
+DB_PATH = os.path.join(DATA_DIR, "cybersecurity_ad.db")
+RAW_PATH = os.path.join(DATA_DIR, "cybersecurity_raw.json")
+VEC_CACHE = os.path.join(DATA_DIR, "cybersecurity_ad_vectors.json")
 
 # 1. Load API Key
-API_KEY = None
-if os.path.exists(ENV_PATH):
-    with open(ENV_PATH, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("GOOGLE_API_KEY="):
-                API_KEY = line.strip().split("=", 1)[1].strip("\"'")
-                break
+API_KEY = get_api_key()
 if not API_KEY:
-    raise RuntimeError("GOOGLE_API_KEY not found in " + ENV_PATH)
+    raise RuntimeError("GOOGLE_API_KEY not found in environment or .env file.")
 
 GEMINI_MODEL = "gemini-3.8-flash"
 EMBED_MODEL = "models/gemini-embedding-001"
@@ -479,7 +475,7 @@ def main():
         })
 
     # Save detailed markdown report
-    report_path = r"C:/Work/Personal/cypher-mcp/benchmarks/reports/CYBERSECURITY_AD_BENCHMARK.md"
+    report_path = os.path.join(REPORTS_DIR, "CYBERSECURITY_AD_BENCHMARK.md")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("# Active Directory (BloodHound) Enterprise Cybersecurity Benchmark\n\n")
         f.write("Evaluation of **GraphRAG (`cypher-mcp`)** vs **Plain Vector RAG** across the official **Neo4j BloodHound Active Directory** corporate dataset (953 enterprise nodes, 4,698 relationships).\n\n")

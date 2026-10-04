@@ -17,10 +17,10 @@ Multi-hop reasoning is where vector search fundamentally breaks down: if entity 
 
 | Test Scenario | Hops | Cypher MCP Latency | Cypher Tokens | SQL Tokens | Vector RAG Multi-Hop Pass |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `1-hop-ownership` | 1-hop | 0.138 ms | 152 | 180 | **PASS** |
-| `2-hop-storage-dependency` | 2-hop | 0.189 ms | 223 | 277 | **PASS** |
-| `3-hop-oncall-chain` | 3-hop | 0.304 ms | 258 | 312 | **PASS** |
-| `recursive-blast-radius` | 3-hop | 0.430 ms | 368 | 442 | **FAIL (Fragmented)** |
+| `1-hop-ownership` | 1-hop | 0.102 ms | 152 | 180 | **PASS** |
+| `2-hop-storage-dependency` | 2-hop | 0.138 ms | 223 | 277 | **PASS** |
+| `3-hop-oncall-chain` | 3-hop | 0.259 ms | 258 | 312 | **PASS** |
+| `recursive-blast-radius` | 3-hop | 0.343 ms | 368 | 442 | **FAIL (Fragmented)** |
 
 ## 2. In-Process Engine Latency (Go Benchmarks)
 

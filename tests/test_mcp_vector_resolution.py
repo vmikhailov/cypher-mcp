@@ -12,8 +12,11 @@ import json
 import subprocess
 import time
 
-BINARY_PATH = r"C:\Work\Personal\cypher-mcp\bin\cypher-mcp.exe"
-TEST_DB = r"C:\Work\Personal\cypher-mcp\data\mcp_vector_test.db"
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "benchmarks")))
+from common import get_paths
+
+REPO_ROOT, BINARY_PATH, DATA_DIR, REPORTS_DIR = get_paths()
+TEST_DB = os.path.join(DATA_DIR, "mcp_vector_test.db")
 
 if os.path.exists(TEST_DB):
     try:
@@ -69,26 +72,26 @@ print("    -> Found 'graph_resolve_entity' and 'graph_upsert_alias' in tools/lis
 # 3. Create nodes in graph
 nodes = [
     {
-        "id": "person:viacheslav",
+        "id": "person:alexander",
         "kind": "Person",
-        "properties": {"name": "Viacheslav Mikhailov", "role": "Architect", "city": "Munich"}
+        "properties": {"name": "Alexander Ivanov", "role": "Architect", "city": "Munich"}
     },
     {
-        "id": "person:ekaterina",
+        "id": "person:elena",
         "kind": "Person",
-        "properties": {"name": "Ekaterina Mikhailova", "role": "Wife"}
+        "properties": {"name": "Elena Ivanova", "role": "Engineer"}
     },
     {
-        "id": "vehicle:m-ew-330",
+        "id": "vehicle:car-01",
         "kind": "Vehicle",
-        "properties": {"plate": "M-EW 330", "model": "BMW 3 Series"}
+        "properties": {"plate": "M-AB 123", "model": "BMW 3 Series"}
     }
 ]
 
 edges = [
     {
-        "from": "person:viacheslav",
-        "to": "vehicle:m-ew-330",
+        "from": "person:alexander",
+        "to": "vehicle:car-01",
         "kind": "OWNS",
         "properties": {"primary": True}
     }
@@ -101,21 +104,13 @@ upsert_resp = call_rpc("tools/call", {
 print("[3] Nodes & edges created:", upsert_resp["result"]["content"][0]["text"])
 
 # 4. Upsert aliases with auto-embeddings
-aliases = [
-    ("person:viacheslav", "Слава"),
-    ("person:viacheslav", "Вячеслав"),
-    ("person:viacheslav", "Viacheslav"),
-    ("person:ekaterina", "Катя"),
-    ("person:vehicle", "БМВ тройка") # Wait, test vehicle
-]
-
 print("[4] Upserting aliases into vector index...")
 for node_id, alias in [
-    ("person:viacheslav", "Слава"),
-    ("person:viacheslav", "Вячеслав"),
-    ("person:viacheslav", "Viacheslav"),
-    ("person:ekaterina", "Катя"),
-    ("vehicle:m-ew-330", "БМВ тройка")
+    ("person:alexander", "Саша"),
+    ("person:alexander", "Александр"),
+    ("person:alexander", "Alex"),
+    ("person:elena", "Лена"),
+    ("vehicle:car-01", "БМВ тройка")
 ]:
     t0 = time.time()
     res = call_rpc("tools/call", {
@@ -127,11 +122,11 @@ for node_id, alias in [
 
 # 5. Test Entity Resolution with colloquial inputs
 test_cases = [
-    ("со Славой", "person:viacheslav"),
-    ("Славика", "person:viacheslav"),
-    ("Вячеславу", "person:viacheslav"),
-    ("Катенька", "person:ekaterina"),
-    ("Бэха", "vehicle:m-ew-330")
+    ("со Сашей", "person:alexander"),
+    ("Санька", "person:alexander"),
+    ("Александру", "person:alexander"),
+    ("Леночка", "person:elena"),
+    ("Бэха", "vehicle:car-01")
 ]
 
 print("\n[5] Testing graph_resolve_entity:")
@@ -163,7 +158,7 @@ for query, expected_node in test_cases:
 print("\n[6] Combining Resolution + Cypher Query:")
 res = call_rpc("tools/call", {
     "name": "graph_resolve_entity",
-    "arguments": {"query": "со Славой", "limit": 1}
+    "arguments": {"query": "со Сашей", "limit": 1}
 })
 resolved_node = json.loads(res["result"]["content"][0]["text"])["results"][0]["node_id"]
 

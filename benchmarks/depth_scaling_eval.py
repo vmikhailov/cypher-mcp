@@ -16,18 +16,15 @@ import math
 import subprocess
 import urllib.request
 
-env_path = r"C:\Users\viach\AppData\Local\hermes\.env"
-api_key = None
-if os.path.exists(env_path):
-    with open(env_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("GOOGLE_API_KEY="):
-                api_key = line.split("=", 1)[1].strip().strip("\"'")
-                break
+sys.path.insert(0, os.path.dirname(__file__))
+from common import get_api_key, get_paths
 
+REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
+DB_PATH = os.path.join(DATA_DIR, "depth_scaling.db")
+
+api_key = get_api_key()
 if not api_key:
-    print("Error: GOOGLE_API_KEY not found in .env")
+    print("Error: GOOGLE_API_KEY not found in environment or .env file.")
     sys.exit(1)
 
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
@@ -138,7 +135,6 @@ for doc in raw_docs:
 print(f"Indexed {len(doc_vectors)} text chunks.")
 
 # Index Graph in cypher-mcp
-DB_PATH = r"C:\Work\Personal\cypher-mcp\data\depth_scaling.db"
 if os.path.exists(DB_PATH):
     try:
         os.remove(DB_PATH)
@@ -146,7 +142,7 @@ if os.path.exists(DB_PATH):
         pass
 
 mcp_proc = subprocess.Popen(
-    [r"C:\Work\Personal\cypher-mcp\bin\cypher-mcp.exe", "--db", DB_PATH],
+    [BIN_PATH, "--db", DB_PATH],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
 )
 
@@ -299,7 +295,7 @@ for t in TESTS:
 mcp_proc.kill()
 
 # Save Report
-REPORT_PATH = r"C:/Work/Personal/cypher-mcp/benchmarks/reports/DEPTH_SCALING_BENCHMARK.md"
+REPORT_PATH = os.path.join(REPORTS_DIR, "DEPTH_SCALING_BENCHMARK.md")
 os.makedirs(os.path.dirname(REPORT_PATH), exist_ok=True)
 with open(REPORT_PATH, "w", encoding="utf-8") as f:
     f.write("# Zero-Shortcut Depth Scaling Benchmark (1 to 4 Hops)\n\n")

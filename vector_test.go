@@ -60,21 +60,21 @@ func TestVectorEntityResolutionDB(t *testing.T) {
 	}
 
 	// Insert nodes
-	_, err = db.Exec("INSERT INTO nodes VALUES (?, ?, ?)", "person:viacheslav", "Person", `{"name": "Viacheslav"}`)
+	_, err = db.Exec("INSERT INTO nodes VALUES (?, ?, ?)", "person:alexander", "Person", `{"name": "Alexander"}`)
 	if err != nil {
 		t.Fatalf("insert node: %v", err)
 	}
 
 	// Upsert alias with precomputed vector
 	vecSlava := []float32{0.9, 0.1, 0.0}
-	_, err = handleUpsertAlias(db, "person:viacheslav", "Слава", vecSlava)
+	_, err = handleUpsertAlias(db, "person:alexander", "Саша", vecSlava)
 	if err != nil {
 		t.Fatalf("upsert alias: %v", err)
 	}
 
 	// Verify alias stored
 	var count int
-	if err := db.QueryRow("SELECT count(*) FROM entity_embeddings WHERE node_id = ?", "person:viacheslav").Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow("SELECT count(*) FROM entity_embeddings WHERE node_id = ?", "person:alexander").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("expected 1 embedding, got %d (err: %v)", count, err)
 	}
 

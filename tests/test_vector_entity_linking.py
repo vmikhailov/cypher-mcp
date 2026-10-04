@@ -3,23 +3,28 @@
 Prototype: Vector Entity Resolution (Linking) on SQLite for cypher-mcp.
 
 Maps colloquial forms, aliases, diminutives, and declensions:
-  "Слава", "со Славой", "Славика", "Вячеслав", "Viacheslav" -> "person:viacheslav"
+  "Саша", "со Сашей", "Санька", "Александр", "Alex" -> "person:alexander"
 Directly in SQLite using cosine similarity.
 """
 
 import os
+import sys
 import json
 import math
 import struct
 import sqlite3
 import urllib.request
 
-env_path = r"C:\Users\viach\AppData\Local\hermes\.env"
-with open(env_path, "r", encoding="utf-8") as f:
-    for line in f:
-        if line.startswith("GOOGLE_API_KEY="):
-            api_key = line.split("=", 1)[1].strip().strip("\"'")
-            break
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "benchmarks")))
+from common import get_api_key, get_paths
+
+api_key = get_api_key()
+if not api_key:
+    print("Error: GOOGLE_API_KEY not found in environment or .env file.")
+    sys.exit(1)
+
+REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
+db_path = os.path.join(DATA_DIR, "vector_entity_demo.db")
 
 EMBED_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={api_key}"
 
@@ -45,9 +50,11 @@ def blob_to_floats(blob):
     return struct.unpack(f"{count}f", blob)
 
 # Setup SQLite DB in memory or file
-db_path = r"C:\Work\Personal\cypher-mcp\data\vector_entity_demo.db"
 if os.path.exists(db_path):
-    os.remove(db_path)
+    try:
+        os.remove(db_path)
+    except Exception:
+        pass
 
 con = sqlite3.connect(db_path)
 cur = con.cursor()
@@ -82,33 +89,33 @@ cur.execute("CREATE INDEX idx_vec_node_id ON entity_embeddings(node_id);")
 
 # 3. Populate sample graph
 nodes_data = [
-    ("person:viacheslav", "Person", json.dumps({"name": "Viacheslav Mikhailov", "role": "Architect"})),
-    ("person:ekaterina", "Person", json.dumps({"name": "Ekaterina Mikhailova", "role": "Wife"})),
-    ("person:timur", "Person", json.dumps({"name": "Timur Mikhailov", "role": "Son"})),
-    ("vehicle:m-ew-330", "Vehicle", json.dumps({"plate": "M-EW 330", "model": "BMW 3 Series"}))
+    ("person:alexander", "Person", json.dumps({"name": "Alexander Ivanov", "role": "Architect"})),
+    ("person:elena", "Person", json.dumps({"name": "Elena Ivanova", "role": "Engineer"})),
+    ("person:dmitry", "Person", json.dumps({"name": "Dmitry Ivanov", "role": "Analyst"})),
+    ("vehicle:car-01", "Vehicle", json.dumps({"plate": "M-AB 123", "model": "BMW 3 Series"}))
 ]
 cur.executemany("INSERT INTO nodes (id, kind, properties) VALUES (?, ?, ?)", nodes_data)
 
 edges_data = [
-    ("person:viacheslav", "vehicle:m-ew-330", "OWNS", json.dumps({"since": "2023"})),
-    ("person:viacheslav", "person:ekaterina", "MARRIED_TO", "{}"),
-    ("person:viacheslav", "person:timur", "PARENT_OF", "{}")
+    ("person:alexander", "vehicle:car-01", "OWNS", json.dumps({"since": "2023"})),
+    ("person:alexander", "person:elena", "WORKS_WITH", "{}"),
+    ("person:alexander", "person:dmitry", "COLLABORATES", "{}")
 ]
 cur.executemany("INSERT INTO edges (from_id, to_id, kind, properties) VALUES (?, ?, ?, ?)", edges_data)
 
 # 4. Populate Aliases with Embeddings
 aliases_to_index = [
-    ("person:viacheslav", "Viacheslav Mikhailov"),
-    ("person:viacheslav", "Вячеслав"),
-    ("person:viacheslav", "Слава"),
-    ("person:viacheslav", "Slava"),
-    ("person:ekaterina", "Ekaterina Mikhailova"),
-    ("person:ekaterina", "Катя"),
-    ("person:ekaterina", "Екатерина"),
-    ("person:timur", "Timur"),
-    ("person:timur", "Тимур"),
-    ("vehicle:m-ew-330", "BMW M-EW 330"),
-    ("vehicle:m-ew-330", "БМВ тройка")
+    ("person:alexander", "Alexander Ivanov"),
+    ("person:alexander", "Александр"),
+    ("person:alexander", "Саша"),
+    ("person:alexander", "Alex"),
+    ("person:elena", "Elena Ivanova"),
+    ("person:elena", "Лена"),
+    ("person:elena", "Елена"),
+    ("person:dmitry", "Dmitry"),
+    ("person:dmitry", "Дима"),
+    ("vehicle:car-01", "BMW M-AB 123"),
+    ("vehicle:car-01", "БМВ тройка")
 ]
 
 print("Indexing entity vectors into SQLite...")
@@ -136,12 +143,12 @@ def resolve_entity(query_text, top_k=2):
 
 # 6. Test various colloquial inputs
 test_inputs = [
-    "Слава",
-    "со Славой",
-    "Славика",
-    "Вячеслав",
-    "Катенька",
-    "Тимурка",
+    "Саша",
+    "со Сашей",
+    "Санька",
+    "Александр",
+    "Леночка",
+    "Димка",
     "Бэха"
 ]
 

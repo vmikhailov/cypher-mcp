@@ -154,7 +154,7 @@ var serverTools = []map[string]any{
 			"properties": map[string]any{
 				"node_id": map[string]any{
 					"type":        "string",
-					"description": "Target canonical node ID (e.g. 'person:viacheslav')",
+					"description": "Target canonical node ID (e.g. 'person:alexander')",
 				},
 				"alias": map[string]any{
 					"type":        "string",
