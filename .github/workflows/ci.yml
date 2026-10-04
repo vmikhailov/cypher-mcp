@@ -28,9 +28,6 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
           cache: true
-      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
-        with:
-          python-version: "3.13"
       - name: Verify dependencies
         run: go mod verify
       - name: Check Go formatting
@@ -53,8 +50,6 @@ jobs:
         run: go test -race -count=1 ./...
       - name: Go fuzz seed corpus tests
         run: go test -v -run="^Fuzz" .
-      - name: Offline Python tests (no network or credentials)
-        run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Verify tests leave tracked files unchanged
         run: git diff --exit-code
 

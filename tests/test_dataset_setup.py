@@ -50,7 +50,7 @@ class DatasetSetupTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         self.addCleanup(self.temp.cleanup)
-        self.directory = Path(self.temp.name)
+        self.directory = Path(self.temp.name).resolve()
         self.target = self.directory / "metaqa.db"
 
     def test_index_refuses_existing_database_before_network_access(self):
@@ -100,8 +100,8 @@ class DatasetSetupTests(unittest.TestCase):
 
         def tracking_connect(database, *args, **kwargs):
             if isinstance(database, (str, Path)) and not str(database).startswith("file:"):
-                p = Path(database)
-                if p != self.target:
+                p = Path(database).resolve()
+                if p != self.target.resolve():
                     created_temp_paths.append(p)
             return real_connect(database, *args, **kwargs)
 
@@ -112,7 +112,7 @@ class DatasetSetupTests(unittest.TestCase):
         self.assertTrue(self.target.exists())
         self.assertEqual(len(created_temp_paths), 1)
         temp_path = created_temp_paths[0]
-        self.assertEqual(temp_path.parent, self.target.parent)
+        self.assertEqual(temp_path.resolve().parent, self.target.resolve().parent)
         self.assertFalse(temp_path.exists())
         index.validate_metaqa(str(self.target))
 

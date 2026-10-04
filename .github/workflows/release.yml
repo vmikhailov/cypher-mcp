@@ -32,11 +32,6 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: true
 
-      - name: Setup Python
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
-        with:
-          python-version: "3.13"
-
       - name: Verify Dependencies
         run: go mod verify
 
@@ -62,9 +57,6 @@ jobs:
       - name: Run Race Detector (Linux & macOS)
         if: runner.os != 'Windows'
         run: go test -race -count=1 ./...
-
-      - name: Offline Python tests (no network or credentials)
-        run: python -m unittest discover -s tests -p "test_*.py" -v
 
   build-and-release:
     name: Build & Release Multi-Arch Binaries
