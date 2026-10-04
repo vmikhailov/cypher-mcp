@@ -132,3 +132,50 @@ func TestResolveEntity_ExplicitMinScoreZero(t *testing.T) {
 		t.Errorf("FAIL invariant F14: explicit min_score 0.0 was coerced to %v", res["min_score"])
 	}
 }
+
+func TestResolveEntity_UnitVectorBoundary(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := initDatabase(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("initDatabase: %v", err)
+	}
+	defer db.Close()
+
+	t.Setenv("GOOGLE_API_KEY", "dummy_test_key")
+	oldClient := embeddingHTTPClient
+	embeddingHTTPClient = &http.Client{
+		Transport: &mockEmbeddingTransport{
+			values: []float32{1.0, 1.0},
+		},
+	}
+	defer func() {
+		embeddingHTTPClient = oldClient
+	}()
+
+	if _, err := handleSetNode(db, "p1", "Person", nil, false, false); err != nil {
+		t.Fatalf("set node: %v", err)
+	}
+	if _, err := handleUpsertAlias(db, "p1", "Alice", []float32{1.0, 1.0}); err != nil {
+		t.Fatalf("upsert alias: %v", err)
+	}
+
+	// Query with min_score = 1.0: identical normalized vectors must not fail boundary
+	args := map[string]any{
+		"query":     "Alice",
+		"min_score": 1.0,
+	}
+	resStr, err := executeToolCall(db, db, "graph_resolve_entity", args, false)
+	if err != nil {
+		t.Fatalf("executeToolCall: %v", err)
+	}
+	var res struct {
+		Count   int               `json:"count"`
+		Results []EntityCandidate `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(resStr), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res.Count != 1 || len(res.Results) != 1 {
+		t.Fatalf("expected 1 result with min_score: 1.0 on identical vectors, got %d", res.Count)
+	}
+}

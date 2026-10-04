@@ -8,7 +8,6 @@ Tests real-world user queries:
 """
 
 import os
-import shutil
 import sys
 import time
 import json
@@ -204,8 +203,7 @@ def main():
     shared_db = os.path.join(DATA_DIR, "metaqa.db")
     ensure_metaqa(shared_db)
 
-    with isolated_db(prefix="metaqa_colloquial_") as DB_PATH:
-        shutil.copy2(shared_db, DB_PATH)
+    with isolated_db(prefix="metaqa_colloquial_", copy_from=shared_db) as DB_PATH:
         mcp_proc = None
         con_fts = None
         try:
@@ -267,11 +265,19 @@ def main():
 
             def compute_metrics(answer, ground_truth, distractors):
                 lower_ans = answer.lower()
-                matched = [k for k in ground_truth if k in lower_ans]
+                def is_negated(text, kw):
+                    pattern = re.compile(
+                        r'\b(not|never|neither|nor|no|except|excluding|without|n\'t)\b.{0,30}\b' + re.escape(kw) + r'\b|\b' +
+                        re.escape(kw) + r'\b.{0,30}\b(not|never|neither|nor|no|unaffected|excluded)\b',
+                        re.IGNORECASE | re.DOTALL
+                    )
+                    return bool(pattern.search(text))
+
+                matched = [k for k in ground_truth if k.lower() in lower_ans and not is_negated(lower_ans, k.lower())]
                 recall = len(matched) / len(ground_truth) if ground_truth else 0.0
                 penalties = 0
                 for d in distractors:
-                    if d.lower() in lower_ans:
+                    if d.lower() in lower_ans and not is_negated(lower_ans, d.lower()):
                         penalties += 1
                 total_predicted = max(len(matched) + penalties, 1)
                 precision = len(matched) / total_predicted

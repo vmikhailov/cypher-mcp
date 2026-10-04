@@ -23,10 +23,13 @@ def setup_all(*, overwrite=False):
 
     print("\n[2/2] Ensuring Cybersecurity Active Directory dataset...")
     try:
-        from cybersecurity_ad_eval import ensure_ad_dataset
+        try:
+            from benchmarks.cybersecurity_ad_eval import ensure_ad_dataset
+        except ImportError:
+            from cybersecurity_ad_eval import ensure_ad_dataset
         ensure_ad_dataset()
     except Exception as exc:
-        print(f"Cybersecurity Active Directory dataset setup notice: {exc}")
+        raise RuntimeError(f"Cybersecurity Active Directory dataset setup failed: {exc}") from exc
 
     print("\nAll benchmark datasets are ready!")
 

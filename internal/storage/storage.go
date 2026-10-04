@@ -140,6 +140,13 @@ func MigrateToV1(db *sql.DB) error {
 			embedding BLOB NOT NULL,
 			UNIQUE(node_id, alias)
 		);
+		DELETE FROM entity_embeddings
+		WHERE rowid NOT IN (
+			SELECT min(rowid)
+			FROM entity_embeddings
+			GROUP BY node_id, alias
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_embeddings_unique ON entity_embeddings(node_id, alias);
 		CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node ON entity_embeddings(node_id);
 		CREATE INDEX IF NOT EXISTS idx_entity_embeddings_alias ON entity_embeddings(alias);
 	`

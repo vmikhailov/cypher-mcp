@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
@@ -20,9 +21,30 @@ import (
 )
 
 var (
-	embeddingHTTPClient = &http.Client{Timeout: 10 * time.Second}
-	credentialPatterns  = regexp.MustCompile(`(?i)(key|token|secret|password|api[_-]?key)=[^\s&"']+`)
+	embeddingHTTPClient = &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			if len(via) > 0 {
+				initialHost := via[0].URL.Hostname()
+				if !strings.EqualFold(req.URL.Hostname(), initialHost) {
+					req.Header.Del("x-goog-api-key")
+					req.Header.Del("Authorization")
+				}
+			}
+			return nil
+		},
+	}
+	credentialPatterns = regexp.MustCompile(`(?i)(key|token|secret|password|api[_-]?key)=[^\s&"']+`)
 )
+
+type queryExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
 
 // sanitizeError removes sensitive credentials and query parameters from error strings
 func sanitizeError(err error, secrets ...string) error {
@@ -33,6 +55,11 @@ func sanitizeError(err error, secrets ...string) error {
 	for _, s := range secrets {
 		if s != "" {
 			msg = strings.ReplaceAll(msg, s, "[REDACTED]")
+			jsonEscaped, errJSON := json.Marshal(s)
+			if errJSON == nil && len(jsonEscaped) > 2 {
+				raw := string(jsonEscaped[1 : len(jsonEscaped)-1])
+				msg = strings.ReplaceAll(msg, raw, "[REDACTED]")
+			}
 		}
 	}
 	msg = credentialPatterns.ReplaceAllString(msg, "$1=[REDACTED]")
@@ -40,7 +67,7 @@ func sanitizeError(err error, secrets ...string) error {
 }
 
 // initVectorTables creates the entity_embeddings table and indexes
-func initVectorTables(db *sql.DB) error {
+func initVectorTables(db queryExecer) error {
 	ddl := `
 		CREATE TABLE IF NOT EXISTS entity_embeddings (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,7 +194,11 @@ func getEmbeddingAPIKey() string {
 }
 
 // fetchEmbedding calls Google Gemini embedding endpoint
-func fetchEmbedding(text string) ([]float32, error) {
+func fetchEmbedding(text string, ctx ...context.Context) ([]float32, error) {
+	c := context.Background()
+	if len(ctx) > 0 && ctx[0] != nil {
+		c = ctx[0]
+	}
 	apiKey := getEmbeddingAPIKey()
 	if apiKey == "" {
 		return nil, fmt.Errorf("no GOOGLE_API_KEY or GEMINI_API_KEY found in environment or .env")
@@ -188,7 +219,7 @@ func fetchEmbedding(text string) ([]float32, error) {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(c, "POST", url, bytes.NewReader(b))
 	if err != nil {
 		return nil, sanitizeError(fmt.Errorf("create embedding request: %w", err), apiKey)
 	}
@@ -228,10 +259,15 @@ type EntityCandidate struct {
 	Kind       string         `json:"kind"`
 	Score      float64        `json:"score"`
 	Properties map[string]any `json:"properties,omitempty"`
+	rawScore   float64        `json:"-"`
 }
 
 // handleResolveEntity performs vector similarity search across entity_embeddings
-func handleResolveEntity(db *sql.DB, query string, kindFilter string, limit int, minScore float64) (string, error) {
+func handleResolveEntity(db *sql.DB, query string, kindFilter string, limit int, minScore float64, ctx ...context.Context) (string, error) {
+	c := context.Background()
+	if len(ctx) > 0 && ctx[0] != nil {
+		c = ctx[0]
+	}
 	if limit <= 0 {
 		return "", fmt.Errorf("invalid 'limit': %d (must be > 0)", limit)
 	}
@@ -239,7 +275,7 @@ func handleResolveEntity(db *sql.DB, query string, kindFilter string, limit int,
 		return "", fmt.Errorf("invalid 'min_score': %f (must be between 0.0 and 1.0)", minScore)
 	}
 
-	qVec, err := fetchEmbedding(query)
+	qVec, err := fetchEmbedding(query, c)
 	if err != nil {
 		return "", fmt.Errorf("failed to embed query '%s': %w", query, err)
 	}
@@ -258,12 +294,13 @@ func handleResolveEntity(db *sql.DB, query string, kindFilter string, limit int,
 		JOIN nodes n ON e.node_id = n.id
 		WHERE (? = '' OR n.kind = ?)
 	`
-	rows, err := db.Query(sqlQuery, kindFilter, kindFilter)
+	rows, err := db.QueryContext(c, sqlQuery, kindFilter, kindFilter)
 	if err != nil {
 		return "", fmt.Errorf("query embeddings: %w", err)
 	}
 	defer rows.Close()
 
+	const floatTolerance = 1e-6
 	var candidates []EntityCandidate
 	for rows.Next() {
 		var (
@@ -285,7 +322,8 @@ func handleResolveEntity(db *sql.DB, query string, kindFilter string, limit int,
 		if err != nil {
 			continue
 		}
-		if score >= minScore {
+
+		if float64(score) >= minScore-floatTolerance {
 			var props map[string]any
 			_ = json.Unmarshal([]byte(propsRaw), &props)
 
@@ -295,6 +333,7 @@ func handleResolveEntity(db *sql.DB, query string, kindFilter string, limit int,
 				Kind:       kind,
 				Score:      math.Round(score*10000) / 10000,
 				Properties: props,
+				rawScore:   float64(score),
 			})
 		}
 	}
@@ -302,9 +341,9 @@ func handleResolveEntity(db *sql.DB, query string, kindFilter string, limit int,
 		return "", fmt.Errorf("iterate candidate embeddings: %w", err)
 	}
 
-	// Sort descending by score
+	// Sort descending by raw unrounded score
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Score > candidates[j].Score
+		return candidates[i].rawScore > candidates[j].rawScore
 	})
 
 	// Deduplicate by NodeID (keeping highest score per node)
@@ -333,7 +372,11 @@ func handleResolveEntity(db *sql.DB, query string, kindFilter string, limit int,
 }
 
 // handleUpsertAlias adds an alias for a node with its vector embedding
-func handleUpsertAlias(db *sql.DB, nodeID string, alias string, explicitVec []float32) (string, error) {
+func handleUpsertAlias(db *sql.DB, nodeID string, alias string, explicitVec []float32, ctx ...context.Context) (string, error) {
+	c := context.Background()
+	if len(ctx) > 0 && ctx[0] != nil {
+		c = ctx[0]
+	}
 	if strings.TrimSpace(nodeID) == "" {
 		return "", fmt.Errorf("node_id is required")
 	}
@@ -343,7 +386,7 @@ func handleUpsertAlias(db *sql.DB, nodeID string, alias string, explicitVec []fl
 
 	// Verify node exists
 	var exists bool
-	err := db.QueryRow("SELECT 1 FROM nodes WHERE id = ?", nodeID).Scan(&exists)
+	err := db.QueryRowContext(c, "SELECT 1 FROM nodes WHERE id = ?", nodeID).Scan(&exists)
 	if err != nil {
 		return "", fmt.Errorf("node '%s' not found in graph: %w", nodeID, err)
 	}
@@ -352,7 +395,7 @@ func handleUpsertAlias(db *sql.DB, nodeID string, alias string, explicitVec []fl
 	if len(explicitVec) > 0 {
 		vec = explicitVec
 	} else {
-		v, err := fetchEmbedding(alias)
+		v, err := fetchEmbedding(alias, c)
 		if err != nil {
 			return "", fmt.Errorf("auto-embed failed for alias '%s': %w", alias, err)
 		}
@@ -371,7 +414,7 @@ func handleUpsertAlias(db *sql.DB, nodeID string, alias string, explicitVec []fl
 	}
 	defer tx.Rollback()
 
-	_, err = tx.Exec(`
+	_, err = tx.ExecContext(c, `
 		INSERT INTO entity_embeddings (node_id, alias, embedding) VALUES (?, ?, ?)
 		ON CONFLICT(node_id, alias) DO UPDATE SET embedding = excluded.embedding
 	`, nodeID, alias, blob)

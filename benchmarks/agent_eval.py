@@ -341,8 +341,16 @@ def main():
                 r_ans = rag_res["final_answer"].lower()
 
                 def check_correctness(ans, gt_keywords, neg_keywords):
-                    has_pos = all(k.lower() in ans for k in gt_keywords) if gt_keywords else True
-                    has_neg = any(k.lower() in ans for k in neg_keywords) if neg_keywords else False
+                    def is_negated(text, kw):
+                        pattern = re.compile(
+                            r'\b(not|never|neither|nor|no|except|excluding|without|n\'t)\b.{0,30}\b' + re.escape(kw) + r'\b|\b' +
+                            re.escape(kw) + r'\b.{0,30}\b(not|never|neither|nor|no|unaffected|excluded)\b',
+                            re.IGNORECASE | re.DOTALL
+                        )
+                        return bool(pattern.search(text))
+
+                    has_pos = all(k.lower() in ans and not is_negated(ans, k.lower()) for k in gt_keywords) if gt_keywords else True
+                    has_neg = any(k.lower() in ans and not is_negated(ans, k.lower()) for k in neg_keywords) if neg_keywords else False
                     return has_pos and not has_neg
 
                 cypher_ok = check_correctness(c_ans, task["ground_truth_keywords"], task["negative_keywords"])

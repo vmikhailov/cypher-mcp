@@ -190,3 +190,41 @@ func TestSchemaMigration_CollisionPreflight(t *testing.T) {
 		t.Errorf("FAIL invariant F11: unhandled SQLite UNIQUE constraint error was leaked: %v", err)
 	}
 }
+
+func TestSchemaMigration_OpposingRules_Succeeds(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := initDatabase(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("initDatabase: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := handleSchemaDefine(db, "add_kind", "A", "", "", "", "", SchemaDefineOptions{AllowSchemaEdit: true}); err != nil {
+		t.Fatalf("add A: %v", err)
+	}
+	if _, err := handleSchemaDefine(db, "add_kind", "B", "", "", "", "", SchemaDefineOptions{AllowSchemaEdit: true}); err != nil {
+		t.Fatalf("add B: %v", err)
+	}
+	if _, err := handleSchemaDefine(db, "add_relation", "", "WORKS_AT", "A", "B", "", SchemaDefineOptions{AllowSchemaEdit: true}); err != nil {
+		t.Fatalf("add relation A->B: %v", err)
+	}
+	if _, err := handleSchemaDefine(db, "add_relation", "", "WORKS_AT", "B", "A", "", SchemaDefineOptions{AllowSchemaEdit: true}); err != nil {
+		t.Fatalf("add relation B->A: %v", err)
+	}
+
+	_, _ = handleSetNode(db, "n1", "A", nil, false, false)
+	_, _ = handleSetNode(db, "n2", "B", nil, false, false)
+
+	// Migrate kind A to B: opposing rules (A)->(B) and (B)->(A) both become (B)->(B)
+	opts := SchemaDefineOptions{
+		AllowSchemaEdit: true,
+		MigrateTo:       "B",
+	}
+	out, err := handleSchemaDefine(db, "remove_kind", "A", "", "", "", "", opts)
+	if err != nil {
+		t.Fatalf("failed to migrate kind A to B with opposing rules: %v", err)
+	}
+	if !strings.Contains(out, "migrated to 'B'") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+}

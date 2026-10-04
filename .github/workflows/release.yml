@@ -32,11 +32,28 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: true
 
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.13"
+
       - name: Verify Dependencies
         run: go mod verify
 
+      - name: Check Go formatting
+        shell: bash
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            printf 'Unformatted Go files:\n%s\n' "$files"
+            exit 1
+          fi
+
       - name: Run Go Vet
         run: go vet ./...
+
+      - name: Staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
 
       - name: Run Tests
         run: go test -v -cover ./...
@@ -44,6 +61,9 @@ jobs:
       - name: Run Race Detector (Linux & macOS)
         if: runner.os != 'Windows'
         run: go test -race -count=1 ./...
+
+      - name: Offline Python tests (no network or credentials)
+        run: python -m unittest discover -s tests -p "test_*.py" -v
 
   build-and-release:
     name: Build & Release Multi-Arch Binaries
@@ -61,7 +81,7 @@ jobs:
           go-version: '1.26.8'
           cache: true
 
-      - name: Run Vulnerability Scan
+      - name: Run Source Vulnerability Scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
       - name: Build Binaries
@@ -77,6 +97,9 @@ jobs:
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/cypher-mcp-darwin-arm64 .
           # Windows AMD64
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/cypher-mcp-windows-amd64.exe .
+
+      - name: Scan Built Linux Binary for Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -mode=binary dist/cypher-mcp-linux-amd64
 
       - name: Generate Checksums
         run: |

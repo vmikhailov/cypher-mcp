@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,10 +12,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -42,25 +45,134 @@ type JSONRPCResponse struct {
 	Error   any              `json:"error,omitempty"`
 }
 
-func validateJSONRPCID(rawID *json.RawMessage) error {
-	if rawID == nil {
-		return nil
-	}
-	s := strings.TrimSpace(string(*rawID))
+const appVersion = "0.4.0"
+
+var nullRawID = json.RawMessage("null")
+
+func parseJSONRPCID(rawID json.RawMessage) (*json.RawMessage, error) {
+	s := strings.TrimSpace(string(rawID))
 	if s == "null" {
-		return nil
+		return &nullRawID, nil
 	}
 	if s == "true" || s == "false" {
-		return fmt.Errorf("id cannot be a boolean")
+		return nil, fmt.Errorf("id cannot be a boolean")
+	}
+	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
+		return nil, fmt.Errorf("id cannot be an object or array")
 	}
 	if strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") {
-		return nil
+		msg := json.RawMessage(s)
+		return &msg, nil
 	}
 	var n json.Number
 	if err := json.Unmarshal([]byte(s), &n); err == nil {
-		return nil
+		msg := json.RawMessage(s)
+		return &msg, nil
 	}
-	return fmt.Errorf("id must be a string, number, or null")
+	return nil, fmt.Errorf("id must be a string, number, or null")
+}
+
+func parseRequiredString(args map[string]any, key string) (string, error) {
+	v, exists := args[key]
+	if !exists || v == nil {
+		return "", fmt.Errorf("missing required argument '%s'", key)
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid '%s': expected string, got %T", key, v)
+	}
+	if strings.TrimSpace(s) == "" {
+		return "", fmt.Errorf("argument '%s' cannot be empty", key)
+	}
+	return s, nil
+}
+
+func parseOptionalString(args map[string]any, key string) (string, error) {
+	v, exists := args[key]
+	if !exists || v == nil {
+		return "", nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid '%s': expected string, got %T", key, v)
+	}
+	return s, nil
+}
+
+func parseOptionalInt(args map[string]any, key string, defaultVal int) (int, error) {
+	v, exists := args[key]
+	if !exists || v == nil {
+		return defaultVal, nil
+	}
+	switch val := v.(type) {
+	case json.Number:
+		i, err := val.Int64()
+		if err != nil {
+			return 0, fmt.Errorf("invalid '%s': expected integer, got %v", key, val)
+		}
+		return int(i), nil
+	case int:
+		return val, nil
+	case int64:
+		return int(val), nil
+	case float64:
+		if val != math.Trunc(val) {
+			return 0, fmt.Errorf("invalid '%s': expected integer, got %v", key, val)
+		}
+		return int(val), nil
+	default:
+		return 0, fmt.Errorf("invalid '%s': expected integer, got %T", key, v)
+	}
+}
+
+func parseOptionalFloat(args map[string]any, key string, defaultVal float64) (float64, error) {
+	v, exists := args[key]
+	if !exists || v == nil {
+		return defaultVal, nil
+	}
+	switch val := v.(type) {
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("invalid '%s': expected number, got %v", key, val)
+		}
+		return f, nil
+	case float64:
+		return val, nil
+	case int:
+		return float64(val), nil
+	case int64:
+		return float64(val), nil
+	default:
+		return 0, fmt.Errorf("invalid '%s': expected number, got %T", key, v)
+	}
+}
+
+func parseOptionalBool(args map[string]any, key string, defaultVal bool) (bool, error) {
+	v, exists := args[key]
+	if !exists || v == nil {
+		return defaultVal, nil
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false, fmt.Errorf("invalid '%s': expected boolean, got %T", key, v)
+	}
+	return b, nil
+}
+
+func parseOptionalObject(args map[string]any, key string) (map[string]any, error) {
+	v, exists := args[key]
+	if !exists {
+		return nil, nil
+	}
+	if v == nil {
+		return nil, fmt.Errorf("invalid '%s': expected JSON object, got null", key)
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("invalid '%s': expected JSON object, got %T", key, v)
+	}
+	return m, nil
 }
 
 type ToolCallParams struct {
@@ -433,6 +545,12 @@ func runMigrations(db *sql.DB) error {
 }
 
 func migrateToV1(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin v1 migration tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	tables := `
 		CREATE TABLE IF NOT EXISTS nodes (
 			id TEXT PRIMARY KEY,
@@ -446,7 +564,7 @@ func migrateToV1(db *sql.DB) error {
 			properties TEXT NOT NULL
 		);
 	`
-	if _, err := db.Exec(tables); err != nil {
+	if _, err := tx.Exec(tables); err != nil {
 		return fmt.Errorf("init tables: %w", err)
 	}
 
@@ -458,7 +576,7 @@ func migrateToV1(db *sql.DB) error {
 			GROUP BY from_id, to_id, kind
 		);
 	`
-	if _, err := db.Exec(dedupEdges); err != nil {
+	if _, err := tx.Exec(dedupEdges); err != nil {
 		return fmt.Errorf("deduplicate edges: %w", err)
 	}
 
@@ -468,15 +586,15 @@ func migrateToV1(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_edges_to_kind ON edges(to_id, kind);
 		CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 	`
-	if _, err := db.Exec(indices); err != nil {
+	if _, err := tx.Exec(indices); err != nil {
 		return fmt.Errorf("init indices: %w", err)
 	}
 
-	if err := initVectorTables(db); err != nil {
+	if err := initVectorTables(tx); err != nil {
 		return fmt.Errorf("init vector tables: %w", err)
 	}
 
-	if err := rebuildFTSIndex(db); err != nil {
+	if err := rebuildFTSIndex(tx); err != nil {
 		return fmt.Errorf("init fts: %w", err)
 	}
 
@@ -506,27 +624,54 @@ func migrateToV1(db *sql.DB) error {
 			details TEXT
 		);
 	`
-	if _, err := db.Exec(schemaDDL); err != nil {
+	if _, err := tx.Exec(schemaDDL); err != nil {
 		return fmt.Errorf("init schema tables: %w", err)
 	}
 
-	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d;", schemaVersion)); err != nil {
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d;", schemaVersion)); err != nil {
 		return fmt.Errorf("set user_version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit v1 migration: %w", err)
 	}
 
 	return nil
 }
 
 func ensureFTSHealthy(db *sql.DB) error {
-	var dummy int
-	err := db.QueryRow("SELECT 1 FROM nodes_fts LIMIT 1;").Scan(&dummy)
-	if err == nil || errors.Is(err, sql.ErrNoRows) {
+	healthy := false
+	var triggerCount int
+	err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ('nodes_ai', 'nodes_ad', 'nodes_au');").Scan(&triggerCount)
+	if err == nil && triggerCount == 3 {
+		var countMatch int
+		err = db.QueryRow("SELECT (SELECT count(*) FROM nodes) = (SELECT count(*) FROM nodes_fts);").Scan(&countMatch)
+		if err == nil && countMatch == 1 {
+			var dummy int
+			checkErr := db.QueryRow("SELECT 1 FROM nodes_fts('test*') LIMIT 1;").Scan(&dummy)
+			if checkErr == nil || errors.Is(checkErr, sql.ErrNoRows) {
+				healthy = true
+			}
+		}
+	}
+	if healthy {
 		return nil
 	}
-	return rebuildFTSIndex(db)
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin fts rebuild tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := rebuildFTSIndex(tx); err != nil {
+		return fmt.Errorf("rebuild fts index: %w", err)
+	}
+
+	return tx.Commit()
 }
 
-func rebuildFTSIndex(db *sql.DB) error {
+func rebuildFTSIndex(db queryExecer) error {
 	ftsDDL := `
 		CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(id, kind, content, tokenize='trigram');
 
@@ -1108,7 +1253,11 @@ type SearchResultItem struct {
 	Rank       float64 `json:"rank"`
 }
 
-func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int) (string, error) {
+func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int, ctx ...context.Context) (string, error) {
+	c := context.Background()
+	if len(ctx) > 0 && ctx[0] != nil {
+		c = ctx[0]
+	}
 	if limit <= 0 {
 		limit = 10
 	}
@@ -1145,7 +1294,7 @@ func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int) (
 	`
 
 	executeFTS := func(ftsExpr string) ([]SearchResultItem, error) {
-		rows, err := db.Query(searchSQL, ftsExpr, kindFilter, kindFilter, limit)
+		rows, err := db.QueryContext(c, searchSQL, ftsExpr, kindFilter, kindFilter, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -1239,7 +1388,7 @@ func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int) (
 			LIMIT ?;
 		`
 		runLike := func(pat string) ([]SearchResultItem, error) {
-			rows, err := db.Query(likeSQL, pat, pat, kindFilter, kindFilter, limit)
+			rows, err := db.QueryContext(c, likeSQL, pat, pat, kindFilter, kindFilter, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -1516,6 +1665,20 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 	if len(nodes) == 0 && len(edges) == 0 {
 		return "No nodes or edges provided in batch.", nil
 	}
+
+	// Normalize duplicate node IDs in batch with last-wins policy before validation
+	dedupedNodes := make([]BatchNodeItem, 0, len(nodes))
+	nodeIndices := make(map[string]int, len(nodes))
+	for _, n := range nodes {
+		id := strings.TrimSpace(n.ID)
+		if idx, exists := nodeIndices[id]; exists {
+			dedupedNodes[idx] = n
+		} else {
+			nodeIndices[id] = len(dedupedNodes)
+			dedupedNodes = append(dedupedNodes, n)
+		}
+	}
+	nodes = dedupedNodes
 
 	// Pre-validate all nodes and edges before starting transaction
 	for i, n := range nodes {
@@ -1961,30 +2124,57 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 			}
 			migrateTo = targetCanonical
 
-			// Pre-clean duplicate schema_relations to avoid UNIQUE constraint violations
-			if _, err := tx.Exec(`
-				DELETE FROM schema_relations 
-				WHERE from_kind = ? COLLATE NOCASE
-				  AND (rel_type, ?, to_kind) IN (SELECT rel_type, from_kind, to_kind FROM schema_relations)
-			`, kind, migrateTo); err != nil {
-				return "", fmt.Errorf("pre-clean schema relations from_kind: %w", err)
+			// Compute final migrated schema rules to avoid UNIQUE collisions across opposing/self rules
+			type schemaRel struct {
+				relType  string
+				fromKind string
+				toKind   string
+				desc     string
 			}
-			if _, err := tx.Exec(`
-				DELETE FROM schema_relations 
-				WHERE to_kind = ? COLLATE NOCASE
-				  AND (rel_type, from_kind, ?) IN (SELECT rel_type, from_kind, to_kind FROM schema_relations)
-			`, kind, migrateTo); err != nil {
-				return "", fmt.Errorf("pre-clean schema relations to_kind: %w", err)
+			rows, err := tx.Query(`
+				SELECT rel_type, from_kind, to_kind, coalesce(description, '') 
+				FROM schema_relations 
+				WHERE from_kind = ? COLLATE NOCASE OR to_kind = ? COLLATE NOCASE
+			`, kind, kind)
+			if err != nil {
+				return "", fmt.Errorf("query schema relations for migration: %w", err)
+			}
+			var pendingRels []schemaRel
+			for rows.Next() {
+				var r schemaRel
+				if err := rows.Scan(&r.relType, &r.fromKind, &r.toKind, &r.desc); err != nil {
+					rows.Close()
+					return "", err
+				}
+				pendingRels = append(pendingRels, r)
+			}
+			rows.Close()
+
+			if _, err := tx.Exec("DELETE FROM schema_relations WHERE from_kind = ? COLLATE NOCASE OR to_kind = ? COLLATE NOCASE", kind, kind); err != nil {
+				return "", fmt.Errorf("delete old schema relations: %w", err)
 			}
 
 			if _, err := tx.Exec("UPDATE nodes SET kind = ? WHERE kind = ?", migrateTo, kind); err != nil {
 				return "", fmt.Errorf("migrate nodes: %w", err)
 			}
-			if _, err := tx.Exec("UPDATE schema_relations SET from_kind = ? WHERE from_kind = ?", migrateTo, kind); err != nil {
-				return "", fmt.Errorf("migrate schema relations from_kind: %w", err)
-			}
-			if _, err := tx.Exec("UPDATE schema_relations SET to_kind = ? WHERE to_kind = ?", migrateTo, kind); err != nil {
-				return "", fmt.Errorf("migrate schema relations to_kind: %w", err)
+
+			for _, r := range pendingRels {
+				newFrom := r.fromKind
+				if strings.EqualFold(newFrom, kind) {
+					newFrom = migrateTo
+				}
+				newTo := r.toKind
+				if strings.EqualFold(newTo, kind) {
+					newTo = migrateTo
+				}
+				if _, err := tx.Exec(`
+					INSERT INTO schema_relations (rel_type, from_kind, to_kind, description)
+					VALUES (?, ?, ?, ?)
+					ON CONFLICT(rel_type, from_kind, to_kind) DO UPDATE SET
+						description = CASE WHEN excluded.description != '' THEN excluded.description ELSE schema_relations.description END
+				`, r.relType, newFrom, newTo, r.desc); err != nil {
+					return "", fmt.Errorf("insert migrated schema relation: %w", err)
+				}
 			}
 			if _, err := tx.Exec("DELETE FROM schema_kinds WHERE kind = ?", kind); err != nil {
 				return "", fmt.Errorf("delete schema kind: %w", err)
@@ -2193,6 +2383,18 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 				return "", fmt.Errorf("migrate_to relation '%s' between '%s' and '%s' does not exist in schema", migrateTo, fromKind, toKind)
 			}
 
+			// Pre-clean colliding edges that already exist with migrateTo
+			precleanSQL := `
+				DELETE FROM edges
+				WHERE kind = ? COLLATE NOCASE
+				  AND from_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE)
+				  AND to_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE)
+				  AND (from_id, to_id, ?) IN (SELECT from_id, to_id, kind FROM edges);
+			`
+			if _, err := tx.Exec(precleanSQL, relation, fromKind, toKind, migrateTo); err != nil {
+				return "", fmt.Errorf("pre-clean colliding edges: %w", err)
+			}
+
 			migrateSQL := `
 				UPDATE edges SET kind = ?
 				WHERE kind = ? COLLATE NOCASE
@@ -2314,6 +2516,17 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 				return "", fmt.Errorf("update schema_relations: %w", err)
 			}
 
+			// Pre-clean colliding edges that already exist with newRelation
+			if _, err := tx.Exec(`
+				DELETE FROM edges 
+				WHERE kind = ? COLLATE NOCASE 
+				  AND from_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE)
+				  AND to_id IN (SELECT id FROM nodes WHERE kind = ? COLLATE NOCASE)
+				  AND (from_id, to_id, ?) IN (SELECT from_id, to_id, kind FROM edges)
+			`, relation, fromKind, toKind, newRelation); err != nil {
+				return "", fmt.Errorf("pre-clean colliding edges: %w", err)
+			}
+
 			res, err := tx.Exec(`
 				UPDATE edges SET kind = ?
 				WHERE kind = ? COLLATE NOCASE
@@ -2328,6 +2541,16 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 			if _, err := tx.Exec("UPDATE schema_relations SET rel_type = ? WHERE rel_type = ? COLLATE NOCASE", newRelation, relation); err != nil {
 				return "", fmt.Errorf("update schema_relations: %w", err)
 			}
+
+			// Pre-clean global colliding edges that already exist with newRelation
+			if _, err := tx.Exec(`
+				DELETE FROM edges 
+				WHERE kind = ? COLLATE NOCASE 
+				  AND (from_id, to_id, ?) IN (SELECT from_id, to_id, kind FROM edges)
+			`, relation, newRelation); err != nil {
+				return "", fmt.Errorf("pre-clean global colliding edges: %w", err)
+			}
+
 			res, err := tx.Exec("UPDATE edges SET kind = ? WHERE kind = ? COLLATE NOCASE", newRelation, relation)
 			if err != nil {
 				return "", fmt.Errorf("update edges: %w", err)
@@ -2350,95 +2573,131 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 }
 
 // executeToolCall strictly parses and validates arguments before executing the designated tool
-func executeToolCall(db, dbRO *sql.DB, toolName string, arguments map[string]any, isStrict bool) (string, error) {
+func executeToolCall(db, dbRO *sql.DB, toolName string, arguments map[string]any, isStrict bool, ctx ...context.Context) (string, error) {
+	c := context.Background()
+	if len(ctx) > 0 && ctx[0] != nil {
+		c = ctx[0]
+	}
 	switch toolName {
 	case "graph_query":
-		query, _ := arguments["query"].(string)
-		queryParams, _ := arguments["params"].(map[string]any)
+		query, err := parseRequiredString(arguments, "query")
+		if err != nil {
+			return "", err
+		}
+		queryParams, err := parseOptionalObject(arguments, "params")
+		if err != nil {
+			return "", err
+		}
 		effectiveLimit := defaultMaxRows
-		if lVal, ok := arguments["limit"]; ok {
-			switch v := lVal.(type) {
-			case float64:
-				effectiveLimit = int(v)
-			case int:
-				effectiveLimit = v
+		if _, hasLimit := arguments["limit"]; hasLimit {
+			lim, err := parseOptionalInt(arguments, "limit", defaultMaxRows)
+			if err != nil {
+				return "", err
+			}
+			if lim < 0 {
+				return "", fmt.Errorf("invalid 'limit': %d (must be >= 0)", lim)
+			}
+			effectiveLimit = lim
+			if defaultMaxRows > 0 && (effectiveLimit == 0 || effectiveLimit > defaultMaxRows) {
+				effectiveLimit = defaultMaxRows
 			}
 		}
-		if effectiveLimit < 0 {
-			return "", fmt.Errorf("invalid 'limit': %d (must be >= 0)", effectiveLimit)
-		}
-		return handleGraphQuery(dbRO, query, queryParams, effectiveLimit)
+		return handleGraphQuery(dbRO, query, queryParams, effectiveLimit, c)
 
 	case "graph_search":
-		query, _ := arguments["query"].(string)
-		kindFilter, _ := arguments["kind"].(string)
-		limit := 10
-		if lVal, ok := arguments["limit"]; ok {
-			switch v := lVal.(type) {
-			case float64:
-				limit = int(v)
-			case int:
-				limit = v
-			}
+		query, err := parseRequiredString(arguments, "query")
+		if err != nil {
+			return "", err
+		}
+		kindFilter, err := parseOptionalString(arguments, "kind")
+		if err != nil {
+			return "", err
+		}
+		limit, err := parseOptionalInt(arguments, "limit", 10)
+		if err != nil {
+			return "", err
 		}
 		if limit <= 0 {
 			return "", fmt.Errorf("invalid 'limit': %d (must be > 0)", limit)
 		}
-		return handleGraphSearch(dbRO, query, kindFilter, limit)
+		if limit > 50 {
+			limit = 50
+		}
+		return handleGraphSearch(dbRO, query, kindFilter, limit, c)
 
 	case "graph_resolve_entity":
-		query, _ := arguments["query"].(string)
-		kindFilter, _ := arguments["kind"].(string)
-		limit := 5
-		if lVal, ok := arguments["limit"]; ok {
-			switch v := lVal.(type) {
-			case float64:
-				limit = int(v)
-			case int:
-				limit = v
-			}
+		query, err := parseRequiredString(arguments, "query")
+		if err != nil {
+			return "", err
+		}
+		kindFilter, err := parseOptionalString(arguments, "kind")
+		if err != nil {
+			return "", err
+		}
+		limit, err := parseOptionalInt(arguments, "limit", 5)
+		if err != nil {
+			return "", err
 		}
 		if limit <= 0 {
 			return "", fmt.Errorf("invalid 'limit': %d (must be > 0)", limit)
 		}
-		minScore := 0.50
-		if sVal, ok := arguments["min_score"]; ok {
-			switch v := sVal.(type) {
-			case float64:
-				minScore = v
-			case int:
-				minScore = float64(v)
-			default:
-				return "", fmt.Errorf("invalid 'min_score': expected number, got %T", sVal)
-			}
+		minScore, err := parseOptionalFloat(arguments, "min_score", 0.50)
+		if err != nil {
+			return "", err
 		}
 		if minScore < 0.0 || minScore > 1.0 {
 			return "", fmt.Errorf("invalid 'min_score': %f (must be between 0.0 and 1.0)", minScore)
 		}
-		return handleResolveEntity(dbRO, query, kindFilter, limit, minScore)
+		return handleResolveEntity(dbRO, query, kindFilter, limit, minScore, c)
 
 	case "graph_upsert_alias":
-		nodeID, _ := arguments["node_id"].(string)
-		alias, _ := arguments["alias"].(string)
+		nodeID, err := parseRequiredString(arguments, "node_id")
+		if err != nil {
+			return "", err
+		}
+		alias, err := parseRequiredString(arguments, "alias")
+		if err != nil {
+			return "", err
+		}
 		var explicitVec []float32
-		if rawVec, ok := arguments["embedding"]; ok && rawVec != nil {
+		if rawVec, ok := arguments["embedding"]; ok {
+			if rawVec == nil {
+				return "", fmt.Errorf("invalid 'embedding': cannot be null")
+			}
 			vecSlice, isSlice := rawVec.([]any)
 			if !isSlice {
 				return "", fmt.Errorf("invalid 'embedding': expected array of numbers, got %T", rawVec)
 			}
+			if len(vecSlice) == 0 {
+				return "", fmt.Errorf("invalid 'embedding': array cannot be empty")
+			}
 			for idx, v := range vecSlice {
-				f, ok := v.(float64)
-				if !ok {
+				switch num := v.(type) {
+				case json.Number:
+					f, err := num.Float64()
+					if err != nil {
+						return "", fmt.Errorf("invalid 'embedding[%d]': expected number, got %v", idx, v)
+					}
+					explicitVec = append(explicitVec, float32(f))
+				case float64:
+					explicitVec = append(explicitVec, float32(num))
+				case int:
+					explicitVec = append(explicitVec, float32(num))
+				case int64:
+					explicitVec = append(explicitVec, float32(num))
+				default:
 					return "", fmt.Errorf("invalid 'embedding[%d]': expected number, got %T", idx, v)
 				}
-				explicitVec = append(explicitVec, float32(f))
 			}
 		}
-		return handleUpsertAlias(db, nodeID, alias, explicitVec)
+		return handleUpsertAlias(db, nodeID, alias, explicitVec, c)
 
 	case "graph_batch_upsert":
 		var batchNodes []BatchNodeItem
-		if rawNodes, exists := arguments["nodes"]; exists && rawNodes != nil {
+		if rawNodes, exists := arguments["nodes"]; exists {
+			if rawNodes == nil {
+				return "", fmt.Errorf("invalid 'nodes': expected an array of node objects, got null")
+			}
 			if _, isSlice := rawNodes.([]any); !isSlice {
 				return "", fmt.Errorf("invalid 'nodes': expected an array of node objects, got %T", rawNodes)
 			}
@@ -2446,12 +2705,17 @@ func executeToolCall(db, dbRO *sql.DB, toolName string, arguments map[string]any
 			if err != nil {
 				return "", fmt.Errorf("marshal 'nodes': %w", err)
 			}
-			if err := json.Unmarshal(b, &batchNodes); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(b))
+			dec.UseNumber()
+			if err := dec.Decode(&batchNodes); err != nil {
 				return "", fmt.Errorf("invalid 'nodes' array: %w", err)
 			}
 		}
 		var batchEdges []BatchEdgeItem
-		if rawEdges, exists := arguments["edges"]; exists && rawEdges != nil {
+		if rawEdges, exists := arguments["edges"]; exists {
+			if rawEdges == nil {
+				return "", fmt.Errorf("invalid 'edges': expected an array of edge objects, got null")
+			}
 			if _, isSlice := rawEdges.([]any); !isSlice {
 				return "", fmt.Errorf("invalid 'edges': expected an array of edge objects, got %T", rawEdges)
 			}
@@ -2459,65 +2723,107 @@ func executeToolCall(db, dbRO *sql.DB, toolName string, arguments map[string]any
 			if err != nil {
 				return "", fmt.Errorf("marshal 'edges': %w", err)
 			}
-			if err := json.Unmarshal(b, &batchEdges); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(b))
+			dec.UseNumber()
+			if err := dec.Decode(&batchEdges); err != nil {
 				return "", fmt.Errorf("invalid 'edges' array: %w", err)
 			}
 		}
 		return handleBatchUpsert(db, batchNodes, batchEdges, isStrict)
 
 	case "graph_set_node":
-		id, _ := arguments["id"].(string)
-		kind, _ := arguments["kind"].(string)
-		var props map[string]any
-		if rawProps, exists := arguments["properties"]; exists && rawProps != nil {
-			var ok bool
-			props, ok = rawProps.(map[string]any)
-			if !ok {
-				return "", fmt.Errorf("invalid 'properties': expected JSON object, got %T", rawProps)
-			}
+		id, err := parseRequiredString(arguments, "id")
+		if err != nil {
+			return "", err
 		}
-		merge := true
-		if mVal, ok := arguments["merge"].(bool); ok {
-			merge = mVal
+		kind, err := parseRequiredString(arguments, "kind")
+		if err != nil {
+			return "", err
+		}
+		props, err := parseOptionalObject(arguments, "properties")
+		if err != nil {
+			return "", err
+		}
+		merge, err := parseOptionalBool(arguments, "merge", true)
+		if err != nil {
+			return "", err
 		}
 		return handleSetNode(db, id, kind, props, isStrict, merge)
 
 	case "graph_set_edge":
-		from, _ := arguments["from"].(string)
-		to, _ := arguments["to"].(string)
-		kind, _ := arguments["kind"].(string)
-		var props map[string]any
-		if rawProps, exists := arguments["properties"]; exists && rawProps != nil {
-			var ok bool
-			props, ok = rawProps.(map[string]any)
-			if !ok {
-				return "", fmt.Errorf("invalid 'properties': expected JSON object, got %T", rawProps)
-			}
+		from, err := parseRequiredString(arguments, "from")
+		if err != nil {
+			return "", err
 		}
-		merge := true
-		if mVal, ok := arguments["merge"].(bool); ok {
-			merge = mVal
+		to, err := parseRequiredString(arguments, "to")
+		if err != nil {
+			return "", err
+		}
+		kind, err := parseRequiredString(arguments, "kind")
+		if err != nil {
+			return "", err
+		}
+		props, err := parseOptionalObject(arguments, "properties")
+		if err != nil {
+			return "", err
+		}
+		merge, err := parseOptionalBool(arguments, "merge", true)
+		if err != nil {
+			return "", err
 		}
 		return handleSetEdge(db, from, to, kind, props, isStrict, merge)
 
 	case "graph_delete_node":
-		id, _ := arguments["id"].(string)
+		id, err := parseRequiredString(arguments, "id")
+		if err != nil {
+			return "", err
+		}
 		return handleDeleteNode(db, id)
 
 	case "graph_schema":
 		return handleSchema(dbRO, isStrict)
 
 	case "graph_schema_define":
-		action, _ := arguments["action"].(string)
-		kind, _ := arguments["kind"].(string)
-		relation, _ := arguments["relation"].(string)
-		fromKind, _ := arguments["from_kind"].(string)
-		toKind, _ := arguments["to_kind"].(string)
-		description, _ := arguments["description"].(string)
-		newKind, _ := arguments["new_kind"].(string)
-		newRelation, _ := arguments["new_relation"].(string)
-		cascade, _ := arguments["cascade"].(bool)
-		migrateTo, _ := arguments["migrate_to"].(string)
+		action, err := parseRequiredString(arguments, "action")
+		if err != nil {
+			return "", err
+		}
+		kind, err := parseOptionalString(arguments, "kind")
+		if err != nil {
+			return "", err
+		}
+		relation, err := parseOptionalString(arguments, "relation")
+		if err != nil {
+			return "", err
+		}
+		fromKind, err := parseOptionalString(arguments, "from_kind")
+		if err != nil {
+			return "", err
+		}
+		toKind, err := parseOptionalString(arguments, "to_kind")
+		if err != nil {
+			return "", err
+		}
+		description, err := parseOptionalString(arguments, "description")
+		if err != nil {
+			return "", err
+		}
+		newKind, err := parseOptionalString(arguments, "new_kind")
+		if err != nil {
+			return "", err
+		}
+		newRelation, err := parseOptionalString(arguments, "new_relation")
+		if err != nil {
+			return "", err
+		}
+		cascade, err := parseOptionalBool(arguments, "cascade", false)
+		if err != nil {
+			return "", err
+		}
+		migrateTo, err := parseOptionalString(arguments, "migrate_to")
+		if err != nil {
+			return "", err
+		}
 		opts := SchemaDefineOptions{
 			AllowSchemaEdit: true,
 			Cascade:         cascade,
@@ -2594,9 +2900,10 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 	reader := bufio.NewReader(in)
 	writer := bufio.NewWriter(out)
 
+	var writeMu sync.Mutex
 	sendResponse := func(resp JSONRPCResponse) {
-		if resp.ID == nil && resp.Error == nil {
-			// Do not send responses to notifications
+		if resp.ID == nil {
+			// Do not send responses to notifications (absent ID)
 			return
 		}
 		b, err := json.Marshal(resp)
@@ -2605,10 +2912,15 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 			return
 		}
 		logMsg("OUT: %s", string(b))
+		writeMu.Lock()
+		defer writeMu.Unlock()
 		writer.Write(b)
 		writer.WriteString("\n")
 		writer.Flush()
 	}
+
+	var activeReqMu sync.Mutex
+	activeRequests := make(map[string]context.CancelFunc)
 
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -2619,7 +2931,7 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 			if strings.HasPrefix(trimmed, "[") {
 				sendResponse(JSONRPCResponse{
 					JSONRPC: "2.0",
-					ID:      nil,
+					ID:      &nullRawID,
 					Error: map[string]any{
 						"code":    -32600,
 						"message": "Invalid Request: batch requests are not supported",
@@ -2628,12 +2940,10 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 				continue
 			}
 
-			var req JSONRPCRequest
-			if errUnmarshal := json.Unmarshal([]byte(trimmed), &req); errUnmarshal != nil {
-				logMsg("JSON unmarshal error: %v", errUnmarshal)
+			if !json.Valid([]byte(trimmed)) {
 				sendResponse(JSONRPCResponse{
 					JSONRPC: "2.0",
-					ID:      nil,
+					ID:      &nullRawID,
 					Error: map[string]any{
 						"code":    -32700,
 						"message": "Parse error",
@@ -2642,141 +2952,255 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 				continue
 			}
 
-			if errID := validateJSONRPCID(req.ID); errID != nil {
+			var rawReq map[string]json.RawMessage
+			dec := json.NewDecoder(strings.NewReader(trimmed))
+			dec.UseNumber()
+			if errDecode := dec.Decode(&rawReq); errDecode != nil {
 				sendResponse(JSONRPCResponse{
 					JSONRPC: "2.0",
-					ID:      req.ID,
+					ID:      &nullRawID,
 					Error: map[string]any{
 						"code":    -32600,
-						"message": fmt.Sprintf("Invalid Request: %v", errID),
+						"message": "Invalid Request: top-level JSON must be an object",
 					},
 				})
 				continue
 			}
 
-			if req.JSONRPC != "2.0" {
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Error: map[string]any{
-						"code":    -32600,
-						"message": "Invalid Request: jsonrpc must be '2.0'",
-					},
-				})
+			rawID, hasID := rawReq["id"]
+			isNotification := !hasID
+			var reqID *json.RawMessage
+			if hasID {
+				parsed, errID := parseJSONRPCID(rawID)
+				if errID != nil {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      &nullRawID,
+						Error: map[string]any{
+							"code":    -32600,
+							"message": fmt.Sprintf("Invalid Request: %v", errID),
+						},
+					})
+					continue
+				}
+				reqID = parsed
+			}
+
+			rawRPC, hasRPC := rawReq["jsonrpc"]
+			var rpcVersion string
+			if !hasRPC || json.Unmarshal(rawRPC, &rpcVersion) != nil || rpcVersion != "2.0" {
+				if !isNotification {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      reqID,
+						Error: map[string]any{
+							"code":    -32600,
+							"message": "Invalid Request: jsonrpc must be '2.0'",
+						},
+					})
+				}
 				continue
 			}
 
-			switch req.Method {
+			rawMethod, hasMethod := rawReq["method"]
+			var method string
+			if !hasMethod || json.Unmarshal(rawMethod, &method) != nil {
+				if !isNotification {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      reqID,
+						Error: map[string]any{
+							"code":    -32600,
+							"message": "Invalid Request: missing or invalid method",
+						},
+					})
+				}
+				continue
+			}
+
+			rawParams, hasParams := rawReq["params"]
+			if hasParams {
+				pTrimmed := strings.TrimSpace(string(rawParams))
+				if pTrimmed == "null" || (!strings.HasPrefix(pTrimmed, "{") && !strings.HasPrefix(pTrimmed, "[")) {
+					if !isNotification {
+						sendResponse(JSONRPCResponse{
+							JSONRPC: "2.0",
+							ID:      reqID,
+							Error: map[string]any{
+								"code":    -32602,
+								"message": "Invalid params: must be an object or array",
+							},
+						})
+					}
+					continue
+				}
+			}
+
+			switch method {
+			case "$/cancelRequest":
+				if hasParams {
+					var cancelParams struct {
+						RequestID any `json:"requestId"`
+					}
+					if errCancel := json.Unmarshal(rawParams, &cancelParams); errCancel == nil && cancelParams.RequestID != nil {
+						b, _ := json.Marshal(cancelParams.RequestID)
+						activeReqMu.Lock()
+						if c, ok := activeRequests[string(b)]; ok {
+							c()
+						}
+						activeReqMu.Unlock()
+					}
+				}
+
 			case "initialize":
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: map[string]any{
-						"protocolVersion": "2024-11-05",
-						"capabilities": map[string]any{
-							"tools":     map[string]any{},
-							"resources": map[string]any{},
-							"prompts":   map[string]any{},
+				if !isNotification {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      reqID,
+						Result: map[string]any{
+							"protocolVersion": "2024-11-05",
+							"capabilities": map[string]any{
+								"tools":     map[string]any{},
+								"resources": map[string]any{},
+								"prompts":   map[string]any{},
+							},
+							"serverInfo": map[string]any{
+								"name":    "cypher-graph-mcp",
+								"version": appVersion,
+							},
 						},
-						"serverInfo": map[string]any{
-							"name":    "cypher-graph-mcp",
-							"version": "0.3.3",
-						},
-					},
-				})
+					})
+				}
 
 			case "notifications/initialized":
 				logMsg("Client initialized notification received")
 
 			case "ping":
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result:  map[string]any{},
-				})
-
-			case "resources/list":
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: map[string]any{
-						"resources": []any{},
-					},
-				})
-
-			case "prompts/list":
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: map[string]any{
-						"prompts": []any{},
-					},
-				})
-
-			case "logging/setLevel":
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result:  map[string]any{},
-				})
-
-			case "tools/list":
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: map[string]any{
-						"tools": serverTools,
-					},
-				})
-
-			case "tools/call":
-				var params ToolCallParams
-				if err := json.Unmarshal(req.Params, &params); err != nil {
+				if !isNotification {
 					sendResponse(JSONRPCResponse{
 						JSONRPC: "2.0",
-						ID:      req.ID,
-						Error: map[string]any{
-							"code":    -32602,
-							"message": "Invalid params",
+						ID:      reqID,
+						Result:  map[string]any{},
+					})
+				}
+
+			case "resources/list":
+				if !isNotification {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      reqID,
+						Result: map[string]any{
+							"resources": []any{},
 						},
 					})
+				}
+
+			case "prompts/list":
+				if !isNotification {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      reqID,
+						Result: map[string]any{
+							"prompts": []any{},
+						},
+					})
+				}
+
+			case "logging/setLevel":
+				if !isNotification {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      reqID,
+						Result:  map[string]any{},
+					})
+				}
+
+			case "tools/list":
+				if !isNotification {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      reqID,
+						Result: map[string]any{
+							"tools": serverTools,
+						},
+					})
+				}
+
+			case "tools/call":
+				var params struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				}
+				pDec := json.NewDecoder(bytes.NewReader(rawParams))
+				pDec.UseNumber()
+				if errParams := pDec.Decode(&params); errParams != nil {
+					if !isNotification {
+						sendResponse(JSONRPCResponse{
+							JSONRPC: "2.0",
+							ID:      reqID,
+							Error: map[string]any{
+								"code":    -32602,
+								"message": "Invalid params",
+							},
+						})
+					}
 					continue
 				}
 
-				outText, callErr := executeToolCall(db, dbRO, params.Name, params.Arguments, isStrict)
+				idKey := ""
+				if reqID != nil {
+					idKey = string(*reqID)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				if idKey != "" {
+					activeReqMu.Lock()
+					activeRequests[idKey] = cancel
+					activeReqMu.Unlock()
+				}
 
-				if callErr != nil {
-					sendResponse(JSONRPCResponse{
-						JSONRPC: "2.0",
-						ID:      req.ID,
-						Result: ToolResult{
-							IsError: true,
-							Content: []ToolContent{
-								{Type: "text", Text: callErr.Error()},
+				outText, callErr := executeToolCall(db, dbRO, params.Name, params.Arguments, isStrict, ctx)
+
+				if idKey != "" {
+					activeReqMu.Lock()
+					delete(activeRequests, idKey)
+					activeReqMu.Unlock()
+				}
+				cancel()
+
+				if !isNotification {
+					if callErr != nil {
+						sendResponse(JSONRPCResponse{
+							JSONRPC: "2.0",
+							ID:      reqID,
+							Result: ToolResult{
+								IsError: true,
+								Content: []ToolContent{
+									{Type: "text", Text: callErr.Error()},
+								},
 							},
-						},
-					})
-				} else {
-					sendResponse(JSONRPCResponse{
-						JSONRPC: "2.0",
-						ID:      req.ID,
-						Result: ToolResult{
-							Content: []ToolContent{
-								{Type: "text", Text: outText},
+						})
+					} else {
+						sendResponse(JSONRPCResponse{
+							JSONRPC: "2.0",
+							ID:      reqID,
+							Result: ToolResult{
+								Content: []ToolContent{
+									{Type: "text", Text: outText},
+								},
 							},
-						},
-					})
+						})
+					}
 				}
 
 			default:
-				logMsg("Unhandled method: %s", req.Method)
-				if req.ID != nil {
+				logMsg("Unhandled method: %s", method)
+				if !isNotification {
 					sendResponse(JSONRPCResponse{
 						JSONRPC: "2.0",
-						ID:      req.ID,
+						ID:      reqID,
 						Error: map[string]any{
 							"code":    -32601,
-							"message": fmt.Sprintf("Method not found: %s", req.Method),
+							"message": fmt.Sprintf("Method not found: %s", method),
 						},
 					})
 				}

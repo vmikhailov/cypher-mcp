@@ -47,9 +47,30 @@ def ensure_ad_dataset(raw_path=None, db_path=None):
             f.write(data)
         print(f"Saved {len(data):,} bytes to {r_path}")
 
-    if not os.path.exists(d_path) or os.path.getsize(d_path) < 10000:
+    def is_valid_ad_db(path):
+        if not os.path.exists(path):
+            return False
+        try:
+            con_check = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            cur_check = con_check.cursor()
+            cur_check.execute("SELECT count(*) FROM nodes;")
+            n_cnt = cur_check.fetchone()[0]
+            cur_check.execute("SELECT count(*) FROM edges;")
+            e_cnt = cur_check.fetchone()[0]
+            con_check.close()
+            return n_cnt > 0 and e_cnt > 0
+        except Exception:
+            return False
+
+    if not is_valid_ad_db(d_path):
         print(f"Building Active Directory graph SQLite database at {d_path}...")
-        con = sqlite3.connect(d_path)
+        tmp_path = d_path + ".tmp"
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        con = sqlite3.connect(tmp_path)
         cur = con.cursor()
         cur.execute("PRAGMA synchronous = OFF;")
         cur.execute("PRAGMA journal_mode = MEMORY;")
@@ -85,6 +106,7 @@ def ensure_ad_dataset(raw_path=None, db_path=None):
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_edges_kind ON edges(kind);")
         con.commit()
         con.close()
+        os.replace(tmp_path, d_path)
         print(f"Active Directory database built: {len(node_rows)} nodes, {len(edge_rows)} edges at {d_path}")
 
 def call_gemini(messages, tools=None):
@@ -377,25 +399,33 @@ def evaluate_task(task, res):
     text = res["final_text"]
     if not text:
         return {"recall": 0.0, "hallucinated": 0, "correct": 0}
-        
+
+    def is_negated(t, kw):
+        pattern = re.compile(
+            r'\b(not|never|neither|nor|no|except|excluding|without|n\'t)\b.{0,30}\b' + re.escape(kw) + r'\b|\b' +
+            re.escape(kw) + r'\b.{0,30}\b(not|never|neither|nor|no|unaffected|excluded)\b',
+            re.IGNORECASE | re.DOTALL
+        )
+        return bool(pattern.search(t))
+
     tid = task["id"]
     if tid == "privilege_escalation_path":
         expected = task["target_users"]
-        found = [u for u in expected if u.lower() in text.lower()]
-        has_group = task["intermediate_group"].lower() in text.lower()
-        has_da = task["target_da"].lower() in text.lower()
+        found = [u for u in expected if u.lower() in text.lower() and not is_negated(text, u.lower())]
+        has_group = task["intermediate_group"].lower() in text.lower() and not is_negated(text, task["intermediate_group"].lower())
+        has_da = task["target_da"].lower() in text.lower() and not is_negated(text, task["target_da"].lower())
         recall = (len(found) / len(expected)) * (1.0 if has_group and has_da else 0.5)
         return {"recall": recall * 100.0, "found_count": len(found), "expected_count": len(expected)}
         
     elif tid == "legacy_os_da_sessions":
         expected = task["target_computers"]
-        found = [c for c in expected if c.lower() in text.lower() or c.split(".")[0].lower() in text.lower()]
+        found = [c for c in expected if (c.lower() in text.lower() or c.split(".")[0].lower() in text.lower()) and not is_negated(text, c.lower())]
         recall = (len(found) / len(expected)) * 100.0
         return {"recall": recall, "found_count": len(found), "expected_count": len(expected)}
         
     elif tid == "blast_radius_admin_rights":
         expected = task["target_computers"]
-        found = [c for c in expected if c.lower() in text.lower() or c.split(".")[0].lower() in text.lower()]
+        found = [c for c in expected if (c.lower() in text.lower() or c.split(".")[0].lower() in text.lower()) and not is_negated(text, c.lower())]
         recall = (len(found) / len(expected)) * 100.0
         return {"recall": recall, "found_count": len(found), "expected_count": len(expected)}
 

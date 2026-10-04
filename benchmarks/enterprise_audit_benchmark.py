@@ -455,7 +455,7 @@ def main():
                     "id": "audit_2_financial_cost_rollup",
                     "name": "Transitive Infrastructure Financial Rollup",
                     "prompt": "Calculate the EXACT total monthly infrastructure cost (USD per month) for ALL physical servers and clusters that 'svc:checkout-api' directly or transitively depends on (including servers hosting its dependent services and connected databases). Name the servers and give the exact final sum.",
-                    "expected_facts": ["7400", "7,400", "srv:app-checkout-01", "srv:app-pay-01", "srv:app-tax-01", "srv:cache-redis-01", "srv:db-routing-01", "srv:db-cardvault-01"],
+                    "expected_facts": ["7400", "srv:app-checkout-01", "srv:app-pay-01", "srv:app-tax-01", "srv:cache-redis-01", "srv:db-routing-01", "srv:db-cardvault-01"],
                     "forbidden_hallucinations": []
                 }
             ]
@@ -470,14 +470,19 @@ def main():
                 print(f"Prompt: {task['prompt']}")
                 print("----------------------------------------------------------------------")
 
+                # Helper to normalize numbers like 7,400 -> 7400
+                def norm_text(t):
+                    return re.sub(r'(\d),(\d)', r'\1\2', t.lower())
+
                 # 1. Plain Vector RAG
                 print("[Testing Plain Vector RAG (250 Docs Corpus)...]")
                 def plain_disp(fn, args):
                     return exec_vector_search(args.get("query", ""), args.get("top_k", 6))
 
                 p_res = run_agent_loop("Plain Vector RAG", task["prompt"], PLAIN_SYS, PLAIN_TOOLS, plain_disp, max_turns=10)
-                p_found = [f for f in task["expected_facts"] if f.lower() in p_res["answer"].lower()]
-                p_hallu = [h for h in task["forbidden_hallucinations"] if h.lower() in p_res["answer"].lower()]
+                p_ans_norm = norm_text(p_res["answer"])
+                p_found = [f for f in task["expected_facts"] if norm_text(f) in p_ans_norm]
+                p_hallu = [h for h in task["forbidden_hallucinations"] if norm_text(h) in p_ans_norm]
                 p_recall = round(len(p_found) / len(task["expected_facts"]) * 100, 1)
                 print(f"  Result: Recall={p_recall}% ({len(p_found)}/{len(task['expected_facts'])}) | Hallucinations={len(p_hallu)} {p_hallu} | Turns={p_res['turns']} | Time={p_res['latency_s']}s | Tokens={p_res['tokens']}")
                 print(f"  Answer preview:\n{p_res['answer'][:250]}...\n")
@@ -489,8 +494,9 @@ def main():
                     return exec_graph_query(args.get("query", ""))
 
                 g_res = run_agent_loop("GraphRAG (cypher-mcp)", task["prompt"], GRAPH_SYS, GRAPH_TOOLS, graph_disp, max_turns=12)
-                g_found = [f for f in task["expected_facts"] if f.lower() in g_res["answer"].lower()]
-                g_hallu = [h for h in task["forbidden_hallucinations"] if h.lower() in g_res["answer"].lower()]
+                g_ans_norm = norm_text(g_res["answer"])
+                g_found = [f for f in task["expected_facts"] if norm_text(f) in g_ans_norm]
+                g_hallu = [h for h in task["forbidden_hallucinations"] if norm_text(h) in g_ans_norm]
                 g_recall = round(len(g_found) / len(task["expected_facts"]) * 100, 1)
                 print(f"  Result: Recall={g_recall}% ({len(g_found)}/{len(task['expected_facts'])}) | Hallucinations={len(g_hallu)} | Turns={g_res['turns']} | Time={g_res['latency_s']}s | Tokens={g_res['tokens']}")
                 print(f"  Answer preview:\n{g_res['answer'][:250]}...\n")

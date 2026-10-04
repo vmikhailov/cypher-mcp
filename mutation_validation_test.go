@@ -138,3 +138,30 @@ func dispatchToolCall(db, dbRO *sql.DB, toolName string, args map[string]any) er
 	_, err := executeToolCall(db, dbRO, toolName, args, false)
 	return err
 }
+
+func TestBatchUpsert_DuplicateNodeID_LastWins(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := initDatabase(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("initDatabase: %v", err)
+	}
+	defer db.Close()
+
+	nodes := []BatchNodeItem{
+		{ID: "n1", Kind: "Intermediate", Properties: map[string]any{"v": 1}},
+		{ID: "n1", Kind: "FinalKind", Properties: map[string]any{"v": 2}},
+	}
+	out, err := handleBatchUpsert(db, nodes, nil, false)
+	if err != nil {
+		t.Fatalf("batch upsert duplicate nodes failed: %v", err)
+	}
+	if !strings.Contains(out, "Successfully upserted 1 nodes") {
+		t.Fatalf("unexpected batch output: %s", out)
+	}
+
+	var kind string
+	_ = db.QueryRow("SELECT kind FROM nodes WHERE id = 'n1'").Scan(&kind)
+	if kind != "FinalKind" {
+		t.Fatalf("expected final kind 'FinalKind', got '%s'", kind)
+	}
+}

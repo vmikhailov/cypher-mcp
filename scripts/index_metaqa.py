@@ -41,6 +41,8 @@ def validate_metaqa(target_db):
                 raise ValueError("MetaQA graph has no movies")
             if not con.execute("SELECT 1 FROM edges LIMIT 1").fetchone():
                 raise ValueError("MetaQA graph has no relationships")
+            if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts_fts'").fetchone():
+                con.execute("SELECT fact FROM facts_fts LIMIT 1")
     except sqlite3.Error as exc:
         raise ValueError(f"Invalid MetaQA database at {target_db}: {exc}") from exc
 
@@ -153,6 +155,9 @@ def index_metaqa(target_db=None, *, overwrite=False):
             cur.execute("CREATE INDEX idx_edges_from_id ON edges(from_id);")
             cur.execute("CREATE INDEX idx_edges_to_id ON edges(to_id);")
             cur.execute("CREATE INDEX idx_edges_kind ON edges(kind);")
+
+            cur.execute("CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(fact);")
+            cur.executemany("INSERT INTO facts_fts (fact) VALUES (?)", [(line.strip(),) for line in lines if line.strip()])
 
             con.commit()
 

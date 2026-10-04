@@ -121,7 +121,8 @@ class DatasetSetupTests(unittest.TestCase):
         spec.loader.exec_module(setup_mod)
 
         with mock.patch.object(setup_mod, "ensure_metaqa") as mock_ensure_metaqa:
-            with mock.patch("benchmarks.cybersecurity_ad_eval.ensure_ad_dataset", create=True):
+            with mock.patch("cybersecurity_ad_eval.ensure_ad_dataset", create=True) as mock_ad, \
+                 mock.patch("benchmarks.cybersecurity_ad_eval.ensure_ad_dataset", create=True):
                 setup_mod.setup_all(overwrite=True)
                 mock_ensure_metaqa.assert_called_once()
                 self.assertEqual(mock_ensure_metaqa.call_args[1].get("overwrite"), True)

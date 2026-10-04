@@ -258,14 +258,16 @@ func RunServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 				}
 
 			default:
-				sendResponse(JSONRPCResponse{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Error: map[string]any{
-						"code":    -32601,
-						"message": fmt.Sprintf("Method not found: %s", req.Method),
-					},
-				})
+				if req.ID != nil {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      req.ID,
+						Error: map[string]any{
+							"code":    -32601,
+							"message": fmt.Sprintf("Method not found: %s", req.Method),
+						},
+					})
+				}
 			}
 		}
 
