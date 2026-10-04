@@ -16,11 +16,20 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 DB_PATH = os.path.join(DATA_DIR, "metaqa.db")
 KB_URL = "https://huggingface.co/datasets/camazlucas/MetaQA/raw/main/kb/kb.txt"
 
-def index_metaqa():
-    os.makedirs(DATA_DIR, exist_ok=True)
-    if os.path.exists(DB_PATH):
+def ensure_metaqa(target_db=None):
+    target = target_db or DB_PATH
+    if os.path.exists(target) and os.path.getsize(target) > 1000000:
+        return target
+    print(f"MetaQA database not found at {target}. Downloading and building...")
+    index_metaqa(target)
+    return target
+
+def index_metaqa(target_db=None):
+    target = target_db or DB_PATH
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    if os.path.exists(target):
         try:
-            os.remove(DB_PATH)
+            os.remove(target)
         except Exception:
             pass
 
@@ -35,7 +44,7 @@ def index_metaqa():
 
     print("Indexing into SQLite knowledge graph...")
     t1 = time.time()
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(target)
     cur = con.cursor()
     cur.execute("PRAGMA synchronous = OFF;")
     cur.execute("PRAGMA journal_mode = MEMORY;")
@@ -114,12 +123,12 @@ def index_metaqa():
     con.close()
 
     idx_time = time.time() - t1
-    size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+    size_mb = os.path.getsize(target) / (1024 * 1024)
     print(f"Indexing complete in {idx_time:.2f}s!")
     print(f"  Nodes: {len(nodes):,}")
     print(f"  Edges: {len(edges):,}")
     print(f"  DB Size: {size_mb:.2f} MB")
-    print(f"  Path: {DB_PATH}")
+    print(f"  Path: {target}")
 
 if __name__ == "__main__":
     index_metaqa()

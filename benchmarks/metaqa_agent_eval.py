@@ -17,10 +17,13 @@ import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 from common import get_api_key, get_paths
+from index_metaqa import ensure_metaqa
 
 REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 DB_PATH = os.path.join(DATA_DIR, "metaqa.db")
+ensure_metaqa(DB_PATH)
 
 # 1. Load API Key
 api_key = get_api_key()

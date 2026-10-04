@@ -31,8 +31,12 @@ def get_paths():
     """Retrieve canonical project paths dynamically from environment or script location."""
     repo_root = os.environ.get("CYPHER_MCP_ROOT") or os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     bin_name = "cypher-mcp.exe" if os.name == "nt" else "cypher-mcp"
-    bin_path = os.environ.get("CYPHER_MCP_BIN") or os.path.join(repo_root, "bin", bin_name)
+    default_bin = os.path.join(repo_root, "bin", bin_name)
+    if not os.path.exists(default_bin) and os.path.exists(os.path.join(repo_root, bin_name)):
+        default_bin = os.path.join(repo_root, bin_name)
+    bin_path = os.environ.get("CYPHER_MCP_BIN") or default_bin
     data_dir = os.environ.get("CYPHER_MCP_DATA") or os.path.join(repo_root, "data")
     reports_dir = os.environ.get("CYPHER_MCP_REPORTS") or os.path.join(repo_root, "benchmarks", "reports")
+    os.makedirs(data_dir, exist_ok=True)
     os.makedirs(reports_dir, exist_ok=True)
     return repo_root, bin_path, data_dir, reports_dir

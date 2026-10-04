@@ -13,6 +13,60 @@ REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 DB_PATH = os.path.join(DATA_DIR, "cybersecurity_ad.db")
 RAW_PATH = os.path.join(DATA_DIR, "cybersecurity_raw.json")
 VEC_CACHE = os.path.join(DATA_DIR, "cybersecurity_ad_vectors.json")
+AD_RAW_URL = "https://raw.githubusercontent.com/neo4j-graph-examples/cybersecurity/main/data/cybersecurity-json-data.json"
+
+def ensure_ad_dataset():
+    os.makedirs(os.path.dirname(RAW_PATH), exist_ok=True)
+    if not os.path.exists(RAW_PATH) or os.path.getsize(RAW_PATH) < 1000:
+        print(f"Downloading Active Directory dataset from {AD_RAW_URL}...")
+        req = urllib.request.Request(AD_RAW_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req) as resp:
+            data = resp.read()
+        with open(RAW_PATH, "wb") as f:
+            f.write(data)
+        print(f"Saved {len(data):,} bytes to {RAW_PATH}")
+
+    if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) < 10000:
+        print(f"Building Active Directory graph SQLite database at {DB_PATH}...")
+        con = sqlite3.connect(DB_PATH)
+        cur = con.cursor()
+        cur.execute("PRAGMA synchronous = OFF;")
+        cur.execute("PRAGMA journal_mode = MEMORY;")
+        cur.execute("CREATE TABLE IF NOT EXISTS nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, properties JSON NOT NULL);")
+        cur.execute("CREATE TABLE IF NOT EXISTS edges (from_id TEXT NOT NULL, to_id TEXT NOT NULL, kind TEXT NOT NULL, properties JSON NOT NULL);")
+
+        node_rows = []
+        edge_rows = []
+        with open(RAW_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                if obj.get("type") == "node":
+                    nid = obj["id"]
+                    labels = obj.get("labels", [])
+                    kind = "Group" if "Group" in labels else ("Computer" if "Computer" in labels else ("User" if "User" in labels else labels[0]))
+                    props = json.dumps(obj.get("properties", {}))
+                    node_rows.append((nid, kind, props))
+                elif obj.get("type") == "relationship":
+                    src = obj["start"]["id"]
+                    dst = obj["end"]["id"]
+                    kind = obj.get("label", "RELATED")
+                    props = json.dumps(obj.get("properties", {}))
+                    edge_rows.append((src, dst, kind, props))
+
+        cur.executemany("INSERT INTO nodes VALUES (?, ?, ?)", node_rows)
+        cur.executemany("INSERT INTO edges VALUES (?, ?, ?, ?)", edge_rows)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_nodes_kind ON nodes(kind);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_edges_from ON edges(from_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_edges_to ON edges(to_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_edges_kind ON edges(kind);")
+        con.commit()
+        con.close()
+        print(f"Active Directory database built: {len(node_rows)} nodes, {len(edge_rows)} edges at {DB_PATH}")
+
+ensure_ad_dataset()
 
 # 1. Load API Key
 API_KEY = get_api_key()
