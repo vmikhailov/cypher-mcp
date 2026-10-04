@@ -121,6 +121,55 @@ var serverTools = []map[string]any{
 		},
 	},
 	{
+		"name":        "graph_resolve_entity",
+		"description": "Resolve colloquial, misspelled, inflected, or foreign language entity names (e.g. 'Слава', 'со Славой', 'Славику', 'Beemer') to exact canonical graph node IDs using vector semantic similarity.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{
+					"type":        "string",
+					"description": "Entity name, alias, nickname, or phrase to resolve",
+				},
+				"kind": map[string]any{
+					"type":        "string",
+					"description": "Optional node kind filter (e.g. 'Person', 'Vehicle')",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of resolved candidates (default: 5)",
+				},
+				"min_score": map[string]any{
+					"type":        "number",
+					"description": "Minimum cosine similarity threshold (default: 0.50)",
+				},
+			},
+			"required": []string{"query"},
+		},
+	},
+	{
+		"name":        "graph_upsert_alias",
+		"description": "Associate an alias or alternative name with a graph node and store its embedding vector for semantic entity resolution.",
+		"inputSchema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"node_id": map[string]any{
+					"type":        "string",
+					"description": "Target canonical node ID (e.g. 'person:viacheslav')",
+				},
+				"alias": map[string]any{
+					"type":        "string",
+					"description": "Alias text to index (e.g. 'Слава', 'Вячеслав', 'Slava')",
+				},
+				"embedding": map[string]any{
+					"type":        "array",
+					"description": "Optional precomputed float32 embedding vector. If omitted, server will auto-embed via Gemini API.",
+					"items": map[string]any{"type": "number"},
+				},
+			},
+			"required": []string{"node_id", "alias"},
+		},
+	},
+	{
 		"name":        "graph_batch_upsert",
 		"description": "Atomically upsert multiple nodes and/or edges in a single ACID transaction. If any node or edge fails validation, the entire batch is rolled back.",
 		"inputSchema": map[string]any{
@@ -363,6 +412,10 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 	`
 	if _, err := db.Exec(indices); err != nil {
 		return nil, fmt.Errorf("init indices: %w", err)
+	}
+
+	if err := initVectorTables(db); err != nil {
+		return nil, fmt.Errorf("init vector tables: %w", err)
 	}
 
 	// 1. Full-Text Search (FTS5) table with trigram tokenizer, json_tree value-only indexing, and triggers
@@ -2179,6 +2232,39 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 							}
 						}
 						outText, callErr = handleGraphSearch(dbRO, query, kindFilter, limit)
+
+					case "graph_resolve_entity":
+						query, _ := params.Arguments["query"].(string)
+						kindFilter, _ := params.Arguments["kind"].(string)
+						limit := 5
+						if lVal, ok := params.Arguments["limit"]; ok {
+							switch v := lVal.(type) {
+							case float64:
+								limit = int(v)
+							case int:
+								limit = v
+							}
+						}
+						minScore := 0.50
+						if sVal, ok := params.Arguments["min_score"]; ok {
+							if v, ok := sVal.(float64); ok {
+								minScore = v
+							}
+						}
+						outText, callErr = handleResolveEntity(dbRO, query, kindFilter, limit, minScore)
+
+					case "graph_upsert_alias":
+						nodeID, _ := params.Arguments["node_id"].(string)
+						alias, _ := params.Arguments["alias"].(string)
+						var explicitVec []float32
+						if rawVec, ok := params.Arguments["embedding"].([]any); ok {
+							for _, v := range rawVec {
+								if f, ok := v.(float64); ok {
+									explicitVec = append(explicitVec, float32(f))
+								}
+							}
+						}
+						outText, callErr = handleUpsertAlias(db, nodeID, alias, explicitVec)
 
 					case "graph_batch_upsert":
 						var batchNodes []BatchNodeItem

@@ -17,8 +17,13 @@ dist/
 *.db-journal
 *.db-wal
 *.db-shm
+data/
 
 # IDEs
 .idea/
 .vscode/
 *.swp
+
+# Python cache
+__pycache__/
+*.py[cod]
