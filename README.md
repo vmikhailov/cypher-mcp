@@ -45,17 +45,17 @@ If you need a shared multi-tenant graph for your organization, connect [`cypher-
 
 Evaluations run with autonomous agents powered by **Google Gemini 3.8 Flash** across enterprise and academic multi-hop datasets:
 
-| Benchmark / Dataset | Task Topology | GraphRAG Recall | Plain RAG Recall | GraphRAG Tokens | Plain RAG Tokens | Token Savings | Latency (Graph vs Plain) | Report |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Active Directory Security**<br>(BloodHound: 953 nodes, 4.7k ACLs) | Privilege escalation, credential dumping, blast radius | **100.0%** | 33.3% | **27.9k** | 634.0k | **22.7x fewer** | **12.5s** vs >300s (timeout) | [Report](benchmarks/reports/CYBERSECURITY_AD_BENCHMARK.md) |
-| **MetaQA Colloquial & Typos**<br>(134,741 facts, 43k nodes) | 1-3 Hops with typos, nicknames, informal titles | **100.0%** | 33.3% | **7.9k** | 11.8k | **1.5x fewer** | **5.4s** vs 8.8s (timeout) | [Report](benchmarks/reports/METAQA_COLLOQUIAL_BENCHMARK.md) |
-| **MetaQA Standard Multi-Hop**<br>(134,741 facts, 43k nodes) | 1-hop, 2-hop, 3-hop relationship chaining | **100.0%** | 33.3% | **6.2k** | 14.5k | **2.3x fewer** | **<0.5 ms** vs 250 ms | [Report](benchmarks/reports/METAQA_BENCHMARK_REPORT.md) |
-| **GraphRAG vs Plain Vector RAG**<br>(Synthetic corporate topology) | Conversational entity linking and 2-hop dependencies | **100.0%** | 50.0% | **8.0k** | 18.6k | **2.3x fewer** | **7.1s** vs 17.8s | [Report](benchmarks/reports/VECTOR_GRAPH_VS_PLAIN_RAG.md) |
-| **Enterprise Audit**<br>(250 corporate docs, 230 services) | Transitive blast radius, unpatched DBs, orphaned services | **100.0%** | 33.3% | **12.4k** | 41.2k | **3.3x fewer** | **9.6s** vs 28.4s | [Report](benchmarks/reports/ENTERPRISE_250_DOCS_AUDIT.md) |
-| **2WikiMultihopQA**<br>(Academic benchmark w/ distractors) | Multi-hop reasoning across distractor documents | **100.0%** | 50.0% | **6.4k** | 18.9k | **3.0x fewer** | **6.8s** vs 15.2s | [Report](benchmarks/reports/2WIKI_MULTIHOP_BENCHMARK.md) |
-| **Zero-Shortcut Depth Scaling**<br>(Branching tree, 1 to 4 hops) | Scaling search depth where intermediate nodes lack shortcuts | **100.0%** | 0.0% | **1.2k** | 14.5k | **12.1x fewer** | **0.4 ms** vs 260 ms | [Report](benchmarks/reports/DEPTH_SCALING_BENCHMARK.md) |
-| **Architecture Agent Evals**<br>(Distributed microservice graph) | Diagnostic multi-hop failure analysis and cascade impact | **100.0%** | 50.0% | **13.8k** | 84.2k | **6.1x fewer** | **14.2s** vs 56.8s | [Report](benchmarks/reports/AGENT_EVALS.md) |
-| **Engine Micro-Benchmarks**<br>(Go / SQLite in-process B-Tree) | Point lookups, 2-hop joins, recursive traversal, FTS5 | **100.0%** | 75.0% | **~110 / q** | ~1,800 / q | **16.4x fewer** | **<0.5 ms** vs ~250 ms | [Report](benchmarks/reports/BENCHMARKS.md) |
+| Benchmark / Dataset | Task Topology | GraphRAG Recall | Plain RAG Recall | GraphRAG Tokens | Plain RAG Tokens | Token Savings | Latency (Graph vs Plain) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| [**Active Directory Security**](benchmarks/reports/CYBERSECURITY_AD_BENCHMARK.md)<br>(BloodHound: 953 nodes, 4.7k ACLs) | Privilege escalation, credential dumping, blast radius | **100.0%** | 33.3% | **27.9k** | 634.0k | **22.7x fewer** | **12.5s** vs >300s (timeout) |
+| [**MetaQA Colloquial & Typos**](benchmarks/reports/METAQA_COLLOQUIAL_BENCHMARK.md)<br>(134,741 facts, 43k nodes) | 1-3 Hops with typos, nicknames, informal titles | **100.0%** | 33.3% | **7.9k** | 11.8k | **1.5x fewer** | **5.4s** vs 8.8s (timeout) |
+| [**MetaQA Standard Multi-Hop**](benchmarks/reports/METAQA_BENCHMARK_REPORT.md)<br>(134,741 facts, 43k nodes) | 1-hop, 2-hop, 3-hop relationship chaining | **100.0%** | 33.3% | **6.2k** | 14.5k | **2.3x fewer** | **<0.5 ms** vs 250 ms |
+| [**GraphRAG vs Plain Vector RAG**](benchmarks/reports/VECTOR_GRAPH_VS_PLAIN_RAG.md)<br>(Synthetic corporate topology) | Conversational entity linking and 2-hop dependencies | **100.0%** | 50.0% | **8.0k** | 18.6k | **2.3x fewer** | **7.1s** vs 17.8s |
+| [**Enterprise Audit**](benchmarks/reports/ENTERPRISE_250_DOCS_AUDIT.md)<br>(250 corporate docs, 230 services) | Transitive blast radius, unpatched DBs, orphaned services | **100.0%** | 33.3% | **12.4k** | 41.2k | **3.3x fewer** | **9.6s** vs 28.4s |
+| [**2WikiMultihopQA**](benchmarks/reports/2WIKI_MULTIHOP_BENCHMARK.md)<br>(Academic benchmark w/ distractors) | Multi-hop reasoning across distractor documents | **100.0%** | 50.0% | **6.4k** | 18.9k | **3.0x fewer** | **6.8s** vs 15.2s |
+| [**Zero-Shortcut Depth Scaling**](benchmarks/reports/DEPTH_SCALING_BENCHMARK.md)<br>(Branching tree, 1 to 4 hops) | Scaling search depth where intermediate nodes lack shortcuts | **100.0%** | 0.0% | **1.2k** | 14.5k | **12.1x fewer** | **0.4 ms** vs 260 ms |
+| [**Architecture Agent Evals**](benchmarks/reports/AGENT_EVALS.md)<br>(Distributed microservice graph) | Diagnostic multi-hop failure analysis and cascade impact | **100.0%** | 50.0% | **13.8k** | 84.2k | **6.1x fewer** | **14.2s** vs 56.8s |
+| [**Engine Micro-Benchmarks**](benchmarks/reports/BENCHMARKS.md)<br>(Go / SQLite in-process B-Tree) | Point lookups, 2-hop joins, recursive traversal, FTS5 | **100.0%** | 75.0% | **~110 / q** | ~1,800 / q | **16.4x fewer** | **<0.5 ms** vs ~250 ms |
 
 ---
 
