@@ -407,20 +407,29 @@ SELECT DISTINCT from_id AS affected_service FROM downstream_cte;`,
 		t.Fatalf("json marshal: %v", err)
 	}
 
-	// Write evaluation results to file
-	evalPath := filepath.Join(".", "benchmarks", "reports", "BENCHMARKS.md")
-	mdContent := generateBenchmarkMarkdown(report)
-	if err := os.WriteFile(evalPath, []byte(mdContent), 0644); err != nil {
-		t.Fatalf("write BENCHMARKS.md: %v", err)
+	// Report generation is opt-in; ordinary tests must not modify published artifacts.
+	if evalPath := os.Getenv("CYPHER_MCP_EVAL_REPORT"); evalPath != "" {
+		if err := os.MkdirAll(filepath.Dir(evalPath), 0755); err != nil {
+			t.Fatalf("create report directory: %v", err)
+		}
+		if err := os.WriteFile(evalPath, []byte(generateBenchmarkMarkdown(report)), 0644); err != nil {
+			t.Fatalf("write evaluation report: %v", err)
+		}
+		t.Logf("Generated illustrative evaluation report: %s", evalPath)
 	}
-
-	t.Logf("Benchmark Evaluation Complete. Generated %s:\n%s", evalPath, string(jsonBytes))
+	t.Logf("Evaluation complete:\n%s", string(jsonBytes))
 }
 
 func generateBenchmarkMarkdown(r EvalReport) string {
 	var sb strings.Builder
-	sb.WriteString("# Evidence Base & Performance Benchmarks: Cypher MCP\n\n")
-	sb.WriteString("This report presents empirical performance benchmarks and comparative evaluations between **Cypher MCP**, **Text-to-SQL (Relational CTEs)**, and **Vector/Document RAG** for AI agent memory architectures.\n\n")
+	sb.WriteString("# Illustrative Evaluation: Cypher MCP\n\n")
+	sb.WriteString("**Not an empirical cross-system benchmark.** ")
+	sb.WriteString("Local handler and handwritten SQL timings are measured on a synthetic fixture. ")
+	sb.WriteString("Token counts are character-based estimates; accuracy, RAM and alternative-system latency ")
+	sb.WriteString("include hardcoded assumptions. Retrieval is a keyword simulation, not a vector index. ")
+	sb.WriteString("Neo4j, model query generation and stdio roundtrips are not measured. ")
+	sb.WriteString("The Go benchmark block below is historical illustrative output, not output from this run. ")
+	sb.WriteString("Do not interpret these values as evidence of general agent accuracy or superiority.\n\n")
 
 	sb.WriteString("## Executive Summary\n\n")
 	sb.WriteString("| Architecture | 2+ Hop Accuracy | Prompt Token Load | Query Latency | Memory Footprint | Setup Overhead |\n")

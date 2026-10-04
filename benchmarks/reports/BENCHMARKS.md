@@ -27,13 +27,24 @@ Multi-hop reasoning is where vector search fundamentally breaks down: if entity 
 Micro-benchmarks run on a populated graph with 2,000+ nodes and 6,000+ relationships (`go test -bench=. -benchmem`):
 
 ```text
-BenchmarkTranspileCypher-12             46,812 ops    0.027 ms/op      6.1 KB/op    128 allocs/op
-BenchmarkQuery_1Hop_PointLookup-12      13,449 ops    0.100 ms/op      8.0 KB/op    126 allocs/op
-BenchmarkQuery_2Hop_Join-12              8,311 ops    0.145 ms/op     10.9 KB/op    174 allocs/op
-BenchmarkQuery_3Hop_TeamToStorage-12     3,097 ops    0.348 ms/op     20.0 KB/op    302 allocs/op
-BenchmarkQuery_Recursive_MultiHop-12     1,912 ops    0.817 ms/op     15.0 KB/op    181 allocs/op
-BenchmarkSearch_FTS5_Trigram-12            475 ops    2.429 ms/op     23.3 KB/op    409 allocs/op
-BenchmarkBatchUpsert_50Items-12             68 ops   16.410 ms/op    131.4 KB/op  3,927 allocs/op
+BenchmarkTranspileCypher-12              56,784 ops    0.022 ms/op (21.6 µs)     6.1 KB/op    128 allocs/op
+BenchmarkQuery_1Hop_PointLookup-12       14,570 ops    0.084 ms/op (83.7 µs)     9.2 KB/op    147 allocs/op
+BenchmarkQuery_2Hop_Join-12               8,322 ops    0.144 ms/op (143.9 µs)   12.7 KB/op    199 allocs/op
+BenchmarkQuery_3Hop_TeamToStorage-12      3,132 ops    0.323 ms/op (323.2 µs)   24.8 KB/op    389 allocs/op
+BenchmarkQuery_Recursive_MultiHop-12      1,497 ops    0.727 ms/op (727.3 µs)   36.6 KB/op    486 allocs/op
+BenchmarkSearch_FTS5_Trigram-12             789 ops    1.515 ms/op              35.6 KB/op    660 allocs/op
+BenchmarkBatchUpsert_50Items-12             100 ops   12.115 ms/op             164.7 KB/op  4,877 allocs/op
+```
+
+### Disentangled Sub-Component Latency
+To isolate where query execution time is spent, the query pipeline is decomposed into independent stages:
+
+```text
+1. Cypher AST Transpilation (Go) :  0.016 ms (15.6 µs)   5.3 KB/op   110 allocs/op
+2. SQLite B-Tree Query Execution :  0.056 ms (56.1 µs)   0.7 KB/op    23 allocs/op
+3. JSON Output Serialization     :  0.002 ms  (2.1 µs)   0.8 KB/op    19 allocs/op
+─────────────────────────────────────────────────────────────────────────────
+Total Query Roundtrip Overhead   : ~0.074 ms (73.8 µs)
 ```
 
 ## 3. Why OpenCypher Outperforms Text-to-SQL for LLM Agents

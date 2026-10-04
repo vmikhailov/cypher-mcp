@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 MetaQA Colloquial & Multilingual Benchmark:
 Evaluating cypher-mcp with Vector Entity Resolution vs Text Search on 134,741 Facts.
@@ -9,6 +8,7 @@ Tests real-world user queries:
 """
 
 import os
+import shutil
 import sys
 import time
 import json
@@ -19,30 +19,10 @@ import urllib.error
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from common import get_api_key, get_paths
+
+from common import get_api_key, get_paths, isolated_db, reap_process
 from index_metaqa import ensure_metaqa
 
-REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
-DB_PATH = os.path.join(DATA_DIR, "metaqa.db")
-ensure_metaqa(DB_PATH)
-
-api_key = get_api_key()
-if not api_key:
-    print("Error: GOOGLE_API_KEY not found in environment or .env file.")
-    sys.exit(1)
-
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
-
-# 1. Start cypher-mcp process
-mcp_proc = subprocess.Popen(
-    [BIN_PATH, "--db", DB_PATH],
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True
-)
-
-req_id_counter = 0
 def rpc_mcp(method, params):
     global req_id_counter
     req_id_counter += 1
@@ -51,35 +31,6 @@ def rpc_mcp(method, params):
     mcp_proc.stdin.flush()
     line = mcp_proc.stdout.readline()
     return json.loads(line)
-
-rpc_mcp("initialize", {"protocolVersion": "2024-11-05", "clientInfo": {"name": "metaqa-colloquial-eval"}})
-
-# 2. Index English colloquial aliases into vector store
-print("1. Indexing English colloquial aliases and common typos into MetaQA vector store...")
-aliases_to_index = [
-    # Michelle Trachtenberg
-    ("person:Michelle Trachtenberg", "Michelle Trachtenberg"),
-    ("person:Michelle Trachtenberg", "Michel Trachtenberg"),
-    ("person:Michelle Trachtenberg", "Michelle Trachtenburg"),
-    # John Krasinski
-    ("person:John Krasinski", "John Krasinski"),
-    ("person:John Krasinski", "Jonny Krasinski"),
-    ("person:John Krasinski", "John Krasinsky"),
-    # Catch Me If You Can
-    ("movie:Catch Me If You Can", "Catch Me If You Can"),
-    ("movie:Catch Me If You Can", "Catch Me If U Can")
-]
-
-for node_id, alias in aliases_to_index:
-    rpc_mcp("tools/call", {
-        "name": "graph_upsert_alias",
-        "arguments": {"node_id": node_id, "alias": alias}
-    })
-print(f"   Indexed {len(aliases_to_index)} aliases.\n")
-
-# 3. Text Search (FTS5 on 135k facts)
-con_fts = sqlite3.connect(DB_PATH)
-cur_fts = con_fts.cursor()
 
 def tool_search_facts(query_str, limit=15):
     try:
@@ -107,63 +58,18 @@ def call_gemini(contents, tools=None):
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
-# Tools definitions
-MCP_TOOLS = [
-    {
-        "name": "graph_resolve_entity",
-        "description": "Resolve colloquial names, nicknames, foreign language translations, or typos to canonical node IDs in MetaQA using vector similarity.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "query": {"type": "STRING", "description": "Entity name or phrase"}
-            },
-            "required": ["query"]
-        }
-    },
-    {
-        "name": "graph_query",
-        "description": "Execute OpenCypher queries against MetaQA (43k nodes, 117k edges). Edge types: directed_by, starred_actors, in_language, has_genre, writer.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "query": {"type": "STRING", "description": "OpenCypher query"}
-            },
-            "required": ["query"]
-        }
-    }
-]
-
-TEXT_TOOLS = [
-    {
-        "name": "search_facts",
-        "description": "Full-text search over 134,741 movie facts (triples: subject | relation | object).",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "query": {"type": "STRING", "description": "Search query keywords"}
-            },
-            "required": ["query"]
-        }
-    }
-]
-
 def run_agent(agent_type, question_text, max_steps=8):
     start_time = time.time()
     
     if agent_type == "cypher-mcp":
         system_instruction = (
             "You are a movie knowledge graph assistant powered by cypher-mcp on MetaQA.\n"
-            "If the entity name in user query is informal, has typos, or is colloquial (e.g. 'Michel Trachtenberg', 'Jonny Krasinski', 'Catch Me If U Can'), "
-            "FIRST call graph_resolve_entity to get the exact canonical node_id.\n"
-            "THEN use graph_query to retrieve answers with OpenCypher.\n"
+            "Use graph_resolve_entity when needed to resolve names or titles to canonical node IDs.\n"
+            "Use graph_query to retrieve answers with OpenCypher.\n"
             "Schema edge directions in MetaQA:\n"
             "- Movie to Actor: (m:Movie)-[:starred_actors]->(p:Person)\n"
             "- Movie to Director: (m:Movie)-[:directed_by]->(d:Person)\n"
             "- Movie to Language: (m:Movie)-[:in_language]->(l:Language)\n"
-            "Examples:\n"
-            "- 1-hop (movies by actor): MATCH (m:Movie)-[:starred_actors]->(a:Person {id: $id}) RETURN m.id\n"
-            "- 2-hop (directors who worked with actor): MATCH (d:Person)<-[:directed_by]-(m:Movie)-[:starred_actors]->(a:Person {id: $id}) RETURN d.id\n"
-            "- 3-hop (languages of movies by same director): MATCH (m1:Movie {id: $id})-[:directed_by]->(d:Person)<-[:directed_by]-(m2:Movie)-[:in_language]->(l:Language) RETURN DISTINCT l.id\n"
             "Always state the final answer clearly."
         )
         tools_decl = MCP_TOOLS
@@ -237,87 +143,208 @@ def run_agent(agent_type, question_text, max_steps=8):
         "duration_s": round(duration_s, 2)
     }
 
-TASKS = [
-    {
-        "id": "1-Hop (Typo / Informal Mention)",
-        "question": "What movies did Michel Trachtenberg star in?",
-        "ground_truth": ["inspector gadget", "black christmas", "ice princess", "harriet the spy", "the scribbler"]
-    },
-    {
-        "id": "2-Hop (Nickname / Diminutive)",
-        "question": "Name all directors who directed movies starring Jonny Krasinski.",
-        "ground_truth": ["nancy meyers", "sam mendes", "george clooney", "ken kwapis", "luke greenfield"]
-    },
-    {
-        "id": "3-Hop (Abbreviated Title Multi-Hop)",
-        "question": "What languages were spoken in movies directed by the same filmmaker who directed 'Catch Me If U Can'?",
-        "ground_truth": ["german", "polish", "mende", "japanese"]
-    }
-]
+def main():
+    """Run explicitly; importing this module performs no benchmark work."""
+    global BIN_PATH, DATA_DIR, DB_PATH, GEMINI_URL, MCP_TOOLS, REPORTS_DIR, REPORT_PATH, REPO_ROOT, TASKS, TEXT_TOOLS, alias, aliases_to_index, api_key, avg_mcp_recall, avg_txt_recall, con_fts, cur_fts, f, k, m_matched, m_recall, mcp_proc, mcp_res, node_id, r, req_id_counter, results, t_matched, t_recall, task, txt_res, winner
+    REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
-print("=== Running MetaQA English Benchmark: cypher-mcp vs Text Search ===")
+    api_key = get_api_key()
+    if not api_key:
+        print("Error: GOOGLE_API_KEY not found in environment or .env file.")
+        sys.exit(1)
 
-results = []
-for task in TASKS:
-    print(f"\n=======================================================")
-    print(f"TASK: {task['id']}")
-    print(f"Prompt: {task['question']}")
-    print(f"=======================================================")
-    
-    # 1. Run cypher-mcp
-    print("  -> Running [cypher-mcp + Vector Entity Resolution]...")
-    mcp_res = run_agent("cypher-mcp", task["question"])
-    m_matched = [k for k in task["ground_truth"] if k in mcp_res["final_answer"].lower()]
-    m_recall = round(len(m_matched) / len(task["ground_truth"]) * 100, 1)
-    print(f"     Result: {mcp_res['turns']} turns, {mcp_res['duration_s']}s, Recall: {m_recall}% ({len(m_matched)}/{len(task['ground_truth'])})")
-    print(f"     Answer: {mcp_res['final_answer'][:120]}...\n")
-    
-    # 2. Run Text Search
-    print("  -> Running [Text Search FTS5]...")
-    txt_res = run_agent("text-search", task["question"])
-    t_matched = [k for k in task["ground_truth"] if k in txt_res["final_answer"].lower()]
-    t_recall = round(len(t_matched) / len(task["ground_truth"]) * 100, 1)
-    print(f"     Result: {txt_res['turns']} turns, {txt_res['duration_s']}s, Recall: {t_recall}% ({len(t_matched)}/{len(task['ground_truth'])})")
-    print(f"     Answer: {txt_res['final_answer'][:120]}...\n")
-    
-    results.append({
-        "task": task["id"],
-        "question": task["question"],
-        "mcp": {**mcp_res, "recall": m_recall, "matched": m_matched},
-        "txt": {**txt_res, "recall": t_recall, "matched": t_matched}
-    })
+    GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
 
-mcp_proc.kill()
-con_fts.close()
+    shared_db = os.path.join(DATA_DIR, "metaqa.db")
+    ensure_metaqa(shared_db)
 
-# Generate Markdown Report
-REPORT_PATH = os.path.join(REPORTS_DIR, "METAQA_COLLOQUIAL_BENCHMARK.md")
-os.makedirs(os.path.dirname(REPORT_PATH), exist_ok=True)
-with open(REPORT_PATH, "w", encoding="utf-8") as f:
-    f.write("# MetaQA Colloquial & Multi-Hop Benchmark Report (English)\n\n")
-    f.write("Empirical benchmark evaluating **`cypher-mcp` (Vector Entity Resolution + OpenCypher)** vs. **Text RAG (FTS5 on 134,741 Triples)** across real-world colloquial English questions with typos, nicknames, and abbreviations.\n\n")
-    f.write("- **Dataset:** MetaQA Knowledge Graph (43,170 nodes, 116,434 edges, 134,741 facts)\n")
-    f.write("- **Model:** `Google Gemini 3.8 Flash`\n")
-    f.write("- **Embedding Model:** `gemini-embedding-001` (768 dimensions)\n\n")
-    f.write("---\n\n")
-    f.write("## 1. Final Scorecard\n\n")
-    f.write("| Task Type | cypher-mcp (Vector + Graph) | Text RAG (FTS5) | Winner |\n")
-    f.write("| :--- | :--- | :--- | :--- |\n")
-    for r in results:
-        winner = "**cypher-mcp (Clean Sweep)**" if r["mcp"]["recall"] > r["txt"]["recall"] else ("**TIE**" if r["mcp"]["recall"] == r["txt"]["recall"] else "**Text RAG**")
-        f.write(f"| **{r['task']}**<br>*{r['question']}* | **Recall: {r['mcp']['recall']:.1f}%** ({len(r['mcp']['matched'])}/{len(r['mcp']['matched']) if r['mcp']['recall']==100 else len(r['txt']['matched'])})<br>Turns: {r['mcp']['turns']} \\| Latency: {r['mcp']['duration_s']}s | **Recall: {r['txt']['recall']:.1f}%** ({len(r['txt']['matched'])}/{len(r['txt']['matched']) if r['txt']['recall']==100 else len(r['mcp']['matched'])})<br>Turns: {r['txt']['turns']} \\| Latency: {r['txt']['duration_s']}s | {winner} |\n")
-    
-    avg_mcp_recall = sum(r["mcp"]["recall"] for r in results) / len(results)
-    avg_txt_recall = sum(r["txt"]["recall"] for r in results) / len(results)
-    f.write(f"| **AVERAGE RECALL** | **{avg_mcp_recall:.1f}%** | **{avg_txt_recall:.1f}%** | **cypher-mcp (+{avg_mcp_recall - avg_txt_recall:.1f}%)** |\n\n")
-    f.write("---\n\n")
-    f.write("## 2. Detailed Task Breakdown\n\n")
-    for r in results:
-        f.write(f"### {r['task']}\n\n")
-        f.write(f"- **Prompt:** *\"{r['question']}\"*\n")
-        f.write(f"- **cypher-mcp Output (Recall: {r['mcp']['recall']}%):**\n\n```text\n{r['mcp']['final_answer']}\n```\n\n")
-        f.write(f"- **Text RAG Output (Recall: {r['txt']['recall']}%):**\n\n```text\n{r['txt']['final_answer']}\n```\n\n")
+    with isolated_db(prefix="metaqa_colloquial_") as DB_PATH:
+        shutil.copy2(shared_db, DB_PATH)
+        mcp_proc = None
+        con_fts = None
+        try:
+            mcp_proc = subprocess.Popen(
+                [BIN_PATH, "--db", DB_PATH],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            req_id_counter = 0
+
+            rpc_mcp("initialize", {"protocolVersion": "2024-11-05", "clientInfo": {"name": "metaqa-colloquial-eval"}})
+
+            print("1. Indexing English colloquial aliases and common names into MetaQA vector store...")
+
+            aliases_to_index = [
+                # Michelle Trachtenberg - canonical and formal alias
+                ("person:Michelle Trachtenberg", "Michelle Christine Trachtenberg"),
+                # John Krasinski - canonical and formal alias
+                ("person:John Krasinski", "John Burke Krasinski"),
+                # Catch Me If You Can - canonical title
+                ("movie:Catch Me If You Can", "Catch Me If You Can"),
+            ]
+
+            for node_id, alias in aliases_to_index:
+                rpc_mcp("tools/call", {
+                    "name": "graph_upsert_alias",
+                    "arguments": {"node_id": node_id, "alias": alias}
+                })
+
+            print(f"   Indexed {len(aliases_to_index)} aliases.\n")
+
+            con_fts = sqlite3.connect(DB_PATH)
+
+            cur_fts = con_fts.cursor()
+
+            MCP_TOOLS = [
+                {
+                    "name": "graph_resolve_entity",
+                    "description": "Resolve colloquial names, nicknames, foreign language translations, or typos to canonical node IDs in MetaQA using vector similarity.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "query": {"type": "STRING", "description": "Entity name or phrase"}
+                        },
+                        "required": ["query"]
+                    }
+                },
+                {
+                    "name": "graph_query",
+                    "description": "Execute OpenCypher queries against MetaQA (43k nodes, 117k edges). Edge types: directed_by, starred_actors, in_language, has_genre, writer.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "query": {"type": "STRING", "description": "OpenCypher query"}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            ]
+
+            TEXT_TOOLS = [
+                {
+                    "name": "search_facts",
+                    "description": "Full-text search over 134,741 movie facts (triples: subject | relation | object).",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "query": {"type": "STRING", "description": "Search query keywords"}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            ]
+
+            TASKS = [
+                {
+                    "id": "1-Hop (Typo / Informal Mention)",
+                    "question": "What movies did Michel Trachtenberg star in?",
+                    "ground_truth": ["inspector gadget", "black christmas", "ice princess", "harriet the spy", "the scribbler"],
+                    "distractors": ["tom cruise", "meryl streep", "brad pitt"]
+                },
+                {
+                    "id": "2-Hop (Nickname / Diminutive)",
+                    "question": "Name all directors who directed movies starring Jonny Krasinski.",
+                    "ground_truth": ["nancy meyers", "sam mendes", "george clooney", "ken kwapis", "luke greenfield"],
+                    "distractors": ["steven spielberg", "christopher nolan", "quentin tarantino"]
+                },
+                {
+                    "id": "3-Hop (Abbreviated Title Multi-Hop)",
+                    "question": "What languages were spoken in movies directed by the same filmmaker who directed 'Catch Me If U Can'?",
+                    "ground_truth": ["german", "polish", "mende", "japanese"],
+                    "distractors": ["french", "spanish", "italian"]
+                }
+            ]
+
+            def compute_metrics(answer, ground_truth, distractors):
+                lower_ans = answer.lower()
+                matched = [k for k in ground_truth if k in lower_ans]
+                recall = len(matched) / len(ground_truth) if ground_truth else 0.0
+                penalties = 0
+                for d in distractors:
+                    if d.lower() in lower_ans:
+                        penalties += 1
+                total_predicted = max(len(matched) + penalties, 1)
+                precision = len(matched) / total_predicted
+                f1 = 0.0
+                if precision + recall > 0:
+                    f1 = 2 * (precision * recall) / (precision + recall)
+                return {
+                    "recall": round(recall * 100, 1),
+                    "precision": round(precision * 100, 1),
+                    "f1": round(f1 * 100, 1),
+                    "matched": matched,
+                    "penalties": penalties,
+                }
+
+            print("=== Running MetaQA English Benchmark: cypher-mcp vs Text Search ===")
+
+            results = []
+
+            for task in TASKS:
+                print(f"\n=======================================================")
+                print(f"TASK: {task['id']}")
+                print(f"Prompt: {task['question']}")
+                print(f"=======================================================")
+            
+                # 1. Run cypher-mcp
+                print("  -> Running [cypher-mcp + Vector Entity Resolution]...")
+                mcp_res = run_agent("cypher-mcp", task["question"])
+                m_metrics = compute_metrics(mcp_res["final_answer"], task["ground_truth"], task["distractors"])
+                print(f"     Result: {mcp_res['turns']} turns, {mcp_res['duration_s']}s, Recall: {m_metrics['recall']}%, Precision: {m_metrics['precision']}%, F1: {m_metrics['f1']}%")
+                print(f"     Answer: {mcp_res['final_answer'][:120]}...\n")
+            
+                # 2. Run Text Search
+                print("  -> Running [Text Search FTS5]...")
+                txt_res = run_agent("text-search", task["question"])
+                t_metrics = compute_metrics(txt_res["final_answer"], task["ground_truth"], task["distractors"])
+                print(f"     Result: {txt_res['turns']} turns, {txt_res['duration_s']}s, Recall: {t_metrics['recall']}%, Precision: {t_metrics['precision']}%, F1: {t_metrics['f1']}%")
+                print(f"     Answer: {txt_res['final_answer'][:120]}...\n")
+            
+                results.append({
+                    "task": task["id"],
+                    "question": task["question"],
+                    "mcp": {**mcp_res, **m_metrics},
+                    "txt": {**txt_res, **t_metrics}
+                })
+        finally:
+            if con_fts:
+                con_fts.close()
+            reap_process(mcp_proc)
+
+    REPORT_PATH = os.path.join(REPORTS_DIR, "METAQA_COLLOQUIAL_BENCHMARK.md")
+    os.makedirs(os.path.dirname(REPORT_PATH), exist_ok=True)
+
+    with open(REPORT_PATH, "w", encoding="utf-8") as f:
+        f.write("# MetaQA Colloquial & Multi-Hop Benchmark Report (English)\n\n")
+        f.write("Empirical benchmark evaluating **`cypher-mcp` (Vector Entity Resolution + OpenCypher)** vs. **Text RAG (FTS5 on 134,741 Triples)** across real-world colloquial English questions with typos, nicknames, and abbreviations.\n\n")
+        f.write("- **Dataset:** MetaQA Knowledge Graph (43,170 nodes, 116,434 edges, 134,741 facts)\n")
+        f.write("- **Model:** `Google Gemini 3.8 Flash`\n")
+        f.write("- **Embedding Model:** `gemini-embedding-001` (768 dimensions)\n\n")
         f.write("---\n\n")
+        f.write("## 1. Final Scorecard\n\n")
+        f.write("| Task Type | cypher-mcp (Precision / Recall / F1) | Text RAG (Precision / Recall / F1) | Winner |\n")
+        f.write("| :--- | :--- | :--- | :--- |\n")
+        for r in results:
+            winner = "**cypher-mcp**" if r["mcp"]["f1"] > r["txt"]["f1"] else ("**TIE**" if r["mcp"]["f1"] == r["txt"]["f1"] else "**Text RAG**")
+            f.write(f"| **{r['task']}**<br>*{r['question']}* | **F1: {r['mcp']['f1']:.1f}%** (P: {r['mcp']['precision']}%, R: {r['mcp']['recall']}%)<br>Turns: {r['mcp']['turns']} \\| Latency: {r['mcp']['duration_s']}s | **F1: {r['txt']['f1']:.1f}%** (P: {r['txt']['precision']}%, R: {r['txt']['recall']}%)<br>Turns: {r['txt']['turns']} \\| Latency: {r['txt']['duration_s']}s | {winner} |\n")
+    
+        avg_mcp_f1 = sum(r["mcp"]["f1"] for r in results) / len(results)
+        avg_txt_f1 = sum(r["txt"]["f1"] for r in results) / len(results)
+        f.write(f"| **AVERAGE F1** | **{avg_mcp_f1:.1f}%** | **{avg_txt_f1:.1f}%** | **cypher-mcp (+{avg_mcp_f1 - avg_txt_f1:.1f}%)** |\n\n")
+        f.write("---\n\n")
+        f.write("## 2. Detailed Task Breakdown\n\n")
+        for r in results:
+            f.write(f"### {r['task']}\n\n")
+            f.write(f"- **Prompt:** *\"{r['question']}\"*\n")
+            f.write(f"- **cypher-mcp Output (Recall: {r['mcp']['recall']}%):**\n\n```text\n{r['mcp']['final_answer']}\n```\n\n")
+            f.write(f"- **Text RAG Output (Recall: {r['txt']['recall']}%):**\n\n```text\n{r['txt']['final_answer']}\n```\n\n")
+            f.write("---\n\n")
 
-print(f"\nBenchmark completed! Report written to {REPORT_PATH}")
+    print(f"\nBenchmark completed! Report written to {REPORT_PATH}")
 
+
+if __name__ == "__main__":
+    main()

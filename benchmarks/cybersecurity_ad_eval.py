@@ -1,34 +1,40 @@
-import os
-import sys
 import json
-import time
 import math
-import urllib.request
+import os
+import sqlite3
 import subprocess
+import sys
+import time
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import get_api_key, get_paths
 
-REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
-DB_PATH = os.path.join(DATA_DIR, "cybersecurity_ad.db")
-RAW_PATH = os.path.join(DATA_DIR, "cybersecurity_raw.json")
-VEC_CACHE = os.path.join(DATA_DIR, "cybersecurity_ad_vectors.json")
+from common import get_api_key, get_paths, isolated_db, reap_process
+
 AD_RAW_URL = "https://raw.githubusercontent.com/neo4j-graph-examples/cybersecurity/main/data/cybersecurity-json-data.json"
 
-def ensure_ad_dataset():
-    os.makedirs(os.path.dirname(RAW_PATH), exist_ok=True)
-    if not os.path.exists(RAW_PATH) or os.path.getsize(RAW_PATH) < 1000:
+def ensure_ad_dataset(raw_path=None, db_path=None):
+    if raw_path is None or db_path is None:
+        _, _, data_dir, _ = get_paths()
+        if raw_path is None:
+            raw_path = os.path.join(data_dir, "cybersecurity_raw.json")
+        if db_path is None:
+            db_path = os.path.join(data_dir, "cybersecurity_ad.db")
+    r_path = raw_path
+    d_path = db_path
+    os.makedirs(os.path.dirname(r_path), exist_ok=True)
+    if not os.path.exists(r_path) or os.path.getsize(r_path) < 1000:
         print(f"Downloading Active Directory dataset from {AD_RAW_URL}...")
         req = urllib.request.Request(AD_RAW_URL, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req) as resp:
             data = resp.read()
-        with open(RAW_PATH, "wb") as f:
+        with open(r_path, "wb") as f:
             f.write(data)
-        print(f"Saved {len(data):,} bytes to {RAW_PATH}")
+        print(f"Saved {len(data):,} bytes to {r_path}")
 
-    if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) < 10000:
-        print(f"Building Active Directory graph SQLite database at {DB_PATH}...")
-        con = sqlite3.connect(DB_PATH)
+    if not os.path.exists(d_path) or os.path.getsize(d_path) < 10000:
+        print(f"Building Active Directory graph SQLite database at {d_path}...")
+        con = sqlite3.connect(d_path)
         cur = con.cursor()
         cur.execute("PRAGMA synchronous = OFF;")
         cur.execute("PRAGMA journal_mode = MEMORY;")
@@ -37,7 +43,7 @@ def ensure_ad_dataset():
 
         node_rows = []
         edge_rows = []
-        with open(RAW_PATH, "r", encoding="utf-8") as f:
+        with open(r_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -64,17 +70,7 @@ def ensure_ad_dataset():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ad_edges_kind ON edges(kind);")
         con.commit()
         con.close()
-        print(f"Active Directory database built: {len(node_rows)} nodes, {len(edge_rows)} edges at {DB_PATH}")
-
-ensure_ad_dataset()
-
-# 1. Load API Key
-API_KEY = get_api_key()
-if not API_KEY:
-    raise RuntimeError("GOOGLE_API_KEY not found in environment or .env file.")
-
-GEMINI_MODEL = "gemini-3.8-flash"
-EMBED_MODEL = "models/gemini-embedding-001"
+        print(f"Active Directory database built: {len(node_rows)} nodes, {len(edge_rows)} edges at {d_path}")
 
 def call_gemini(messages, tools=None):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={API_KEY}"
@@ -118,7 +114,6 @@ def cosine_similarity(v1, v2):
     norm2 = math.sqrt(sum(b * b for b in v2))
     return dot / (norm1 * norm2 + 1e-9)
 
-# 2. Build 953 Documents from raw Active Directory dataset
 def load_or_generate_documents():
     with open(RAW_PATH, "r", encoding="utf-8") as f:
         nodes = {}
@@ -213,115 +208,6 @@ def get_or_create_embeddings(docs):
     print(f"Saved {len(vectors)} embeddings to {VEC_CACHE}.")
     return vectors
 
-# 3. Tasks definition
-AD_TASKS = [
-    {
-        "id": "privilege_escalation_path",
-        "name": "Privilege Escalation & ACL Attack Path (3-Hop Transitive)",
-        "prompt": (
-            "You are a cybersecurity auditor investigating Active Directory attack paths. "
-            "Find all non-admin users who have an indirect privilege escalation path (up to 3 hops) to take control over "
-            "an account in 'DOMAIN ADMINS@TestCompany.Local' via group memberships and ACL write permissions (GENERIC_WRITE or GENERIC_ALL). "
-            "Name the users, the intermediate group, the permission type, and the target Domain Admin account."
-        ),
-        "target_users": [
-            "ChinaBracey203@TestCompany.Local",
-            "NannieDeltoro01@TestCompany.Local",
-            "PedroReif62@TestCompany.Local",
-            "ShelaRebolloso75@TestCompany.Local",
-            "ShoshanaDeahl233@TestCompany.Local"
-        ],
-        "intermediate_group": "IT00195@TestCompany.Local",
-        "target_da": "DanielleGallery238@TestCompany.Local"
-    },
-    {
-        "id": "legacy_os_da_sessions",
-        "name": "Critical Credential Dumping Risk (Legacy OS with DA Sessions)",
-        "prompt": (
-            "Audit active sessions across the network to identify critical credential dumping vulnerabilities. "
-            "Identify ALL computers running an outdated/legacy operating system ('Windows 7' or 'Windows Server 2008') "
-            "where any member of 'DOMAIN ADMINS@TestCompany.Local' currently has an active session (HAS_SESSION). "
-            "List the names of these computers and their operating systems."
-        ),
-        "target_computers": [
-            "COMP00017.TestCompany.Local",
-            "COMP00041.TestCompany.Local",
-            "COMP00045.TestCompany.Local",
-            "COMP00051.TestCompany.Local",
-            "COMP00080.TestCompany.Local",
-            "COMP00083.TestCompany.Local",
-            "COMP00117.TestCompany.Local",
-            "COMP00159.TestCompany.Local",
-            "COMP00208.TestCompany.Local",
-            "COMP00218.TestCompany.Local",
-            "COMP00254.TestCompany.Local",
-            "COMP00265.TestCompany.Local",
-            "COMP00274.TestCompany.Local"
-        ]
-    },
-    {
-        "id": "blast_radius_admin_rights",
-        "name": "Exact Administrative Blast Radius (Group-Inherited Admin Rights)",
-        "prompt": (
-            "Audit the blast radius of user 'PedroReif62@TestCompany.Local'. "
-            "List ALL computers in the domain where this user possesses local administrative privileges (ADMIN_TO), "
-            "either directly or inherited through any group memberships. "
-            "What is the exact count of computers and what are their names?"
-        ),
-        "target_count": 4,
-        "target_computers": [
-            "COMP00012.TestCompany.Local",
-            "COMP00081.TestCompany.Local",
-            "COMP00191.TestCompany.Local",
-            "COMP00219.TestCompany.Local"
-        ]
-    }
-]
-
-# 4. Agent tools schemas
-RAG_TOOLS = [{
-    "function_declarations": [
-        {
-            "name": "vector_search",
-            "description": "Performs semantic vector search across Active Directory entity documentation. Returns top matching documents.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "query": {"type": "STRING", "description": "Natural language query to search Active Directory entities."}
-                },
-                "required": ["query"]
-            }
-        },
-        {
-            "name": "get_entity_doc",
-            "description": "Retrieves the full markdown document for an exact entity name or ID.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "name": {"type": "STRING", "description": "Exact name of user, computer, or group."}
-                },
-                "required": ["name"]
-            }
-        }
-    ]
-}]
-
-GRAPH_TOOLS = [{
-    "function_declarations": [
-        {
-            "name": "graph_query",
-            "description": "Execute an OpenCypher query against the Active Directory knowledge graph.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "query": {"type": "STRING", "description": "OpenCypher query to execute"}
-                },
-                "required": ["query"]
-            }
-        }
-    ]
-}]
-
 def run_plain_rag(task, docs, vectors, max_turns=10):
     doc_by_id = {d["id"]: d for d in docs}
     doc_by_name = {d["name"].lower(): d for d in docs}
@@ -398,77 +284,79 @@ def run_graph_rag(task, max_turns=10):
         [BIN_PATH, "--db", DB_PATH],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True
     )
-    def rpc(q):
-        req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "graph_query", "arguments": {"query": q}}}
-        proc.stdin.write(json.dumps(req) + "\n")
-        proc.stdin.flush()
-        line = proc.stdout.readline()
-        res = json.loads(line)
-        return res["result"]["content"][0]["text"]
+    try:
+        def rpc(q):
+            req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "graph_query", "arguments": {"query": q}}}
+            proc.stdin.write(json.dumps(req) + "\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline()
+            if not line:
+                return "Error: server disconnected"
+            res = json.loads(line)
+            return res.get("result", {}).get("content", [{}])[0].get("text", "")
 
-    rpc("dummy")
+        rpc("dummy")
 
-    sys_prompt = (
-        "You are an expert Active Directory auditor. You have access to graph_query with OpenCypher.\n"
-        "Schema:\n"
-        "- (User)-[:MEMBER_OF*1..5]->(Group)\n"
-        "- (Group)-[:MEMBER_OF*1..5]->(Group)\n"
-        "- (User|Group)-[:ADMIN_TO]->(Computer)\n"
-        "- (Computer)-[:HAS_SESSION]->(User)\n"
-        "- (User|Group)-[:GENERIC_WRITE|GENERIC_ALL]->(User|Group)\n"
-        "- Properties on Computer: name, operatingsystem\n"
-        "- Properties on User: name\n"
-        "- Properties on Group: name\n"
-        "Important syntax tips:\n"
-        "- The Domain Admin group name is 'DOMAIN ADMINS@TestCompany.Local'.\n"
-        "- Access properties directly like `c.operatingsystem`, `u.name`.\n"
-        "- 0-hop (*0..) is not supported. Use separate direct and group-inherited queries when checking both.\n"
-        "- Variable-length paths (*1..3) require an anchored start or target node with a property filter (e.g. {name: '...'}).\n"
-        "- To investigate privilege escalation paths to Domain Admins, use two anchored queries:\n"
-        "  1. Find groups with rights over Domain Admins: MATCH (source)-[r:GENERIC_WRITE|GENERIC_ALL]->(target:User)-[:MEMBER_OF*1..3]->(da:Group {name: 'DOMAIN ADMINS@TestCompany.Local'}) RETURN source.name, type(r), target.name\n"
-        "  2. Find members of the controlling group: MATCH (u:User)-[:MEMBER_OF*1..3]->(g:Group {name: '...'}) RETURN u.name\n"
-        "- Once you have identified the matching entities and relationships, output your final response immediately without redundant queries."
-    )
-    
-    messages = [{"role": "user", "parts": [{"text": f"System: {sys_prompt}\n\nTask: {task['prompt']}"}]}]
-    total_tokens = 0
-    t0 = time.time()
-    turns = 0
-    final_text = ""
-
-    for turn in range(max_turns):
-        turns += 1
-        resp = call_gemini(messages, GRAPH_TOOLS)
-        cand = resp["candidates"][0]["content"]
-        parts = cand.get("parts", [])
-        messages.append(cand)
+        sys_prompt = (
+            "You are an expert Active Directory auditor. You have access to graph_query with OpenCypher.\n"
+            "Schema:\n"
+            "- (User)-[:MEMBER_OF*1..5]->(Group)\n"
+            "- (Group)-[:MEMBER_OF*1..5]->(Group)\n"
+            "- (User|Group)-[:ADMIN_TO]->(Computer)\n"
+            "- (Computer)-[:HAS_SESSION]->(User)\n"
+            "- (User|Group)-[:GENERIC_WRITE|GENERIC_ALL]->(User|Group)\n"
+            "- Properties on Computer: name, operatingsystem\n"
+            "- Properties on User: name\n"
+            "- Properties on Group: name\n"
+            "Important syntax tips:\n"
+            "- The Domain Admin group name is 'DOMAIN ADMINS@TestCompany.Local'.\n"
+            "- Access properties directly like `c.operatingsystem`, `u.name`.\n"
+            "- 0-hop (*0..) is not supported. Use separate direct and group-inherited queries when checking both.\n"
+            "- Variable-length paths (*1..3) require an anchored start or target node with a property filter (e.g. {name: '...'}).\n"
+            "- Once you have identified the matching entities and relationships, output your final response immediately without redundant queries."
+        )
         
-        usage = resp.get("usageMetadata", {})
-        total_tokens += usage.get("totalTokenCount", 0)
+        messages = [{"role": "user", "parts": [{"text": f"System: {sys_prompt}\n\nTask: {task['prompt']}"}]}]
+        total_tokens = 0
+        t0 = time.time()
+        turns = 0
+        final_text = ""
 
-        fcs = [p["functionCall"] for p in parts if "functionCall" in p]
-        if not fcs:
-            final_text = "".join(p.get("text", "") for p in parts)
-            break
+        for turn in range(max_turns):
+            turns += 1
+            resp = call_gemini(messages, GRAPH_TOOLS)
+            cand = resp["candidates"][0]["content"]
+            parts = cand.get("parts", [])
+            messages.append(cand)
             
-        resp_parts = []
-        for fc in fcs:
-            fn = fc["name"]
-            args = fc.get("args", {})
-            out = rpc(args.get("query", ""))
-            resp_parts.append({"functionResponse": {"name": fn, "response": {"output": out}}})
-        messages.append({"role": "user", "parts": resp_parts})
+            usage = resp.get("usageMetadata", {})
+            total_tokens += usage.get("totalTokenCount", 0)
 
-    proc.kill()
-    dur = time.time() - t0
-    return {
-        "final_text": final_text,
-        "turns": turns,
-        "tokens": total_tokens,
-        "duration": dur
-    }
+            fcs = [p["functionCall"] for p in parts if "functionCall" in p]
+            if not fcs:
+                final_text = "".join(p.get("text", "") for p in parts)
+                break
+                
+            resp_parts = []
+            for fc in fcs:
+                fn = fc["name"]
+                args = fc.get("args", {})
+                out = rpc(args.get("query", ""))
+                resp_parts.append({"functionResponse": {"name": fn, "response": {"output": out}}})
+            messages.append({"role": "user", "parts": resp_parts})
+
+        dur = time.time() - t0
+        return {
+            "final_text": final_text,
+            "turns": turns,
+            "tokens": total_tokens,
+            "duration": dur
+        }
+    finally:
+        reap_process(proc)
 
 def evaluate_task(task, res):
     text = res["final_text"]
@@ -496,7 +384,7 @@ def evaluate_task(task, res):
         recall = (len(found) / len(expected)) * 100.0
         return {"recall": recall, "found_count": len(found), "expected_count": len(expected)}
 
-def main():
+def _evaluate():
     print("=" * 70)
     print("ACTIVE DIRECTORY (BLOODHOUND) ENTERPRISE AUDIT BENCHMARK")
     print("953 Real Enterprise Entities | 4,698 ACL Relationships")
@@ -530,6 +418,7 @@ def main():
 
     # Save detailed markdown report
     report_path = os.path.join(REPORTS_DIR, "CYBERSECURITY_AD_BENCHMARK.md")
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("# Active Directory (BloodHound) Enterprise Cybersecurity Benchmark\n\n")
         f.write("Evaluation of **GraphRAG (`cypher-mcp`)** vs **Plain Vector RAG** across the official **Neo4j BloodHound Active Directory** corporate dataset (953 enterprise nodes, 4,698 relationships).\n\n")
@@ -548,6 +437,140 @@ def main():
             f.write("---\n\n")
             
     print(f"\nBenchmark completed! Report saved to {report_path}")
+
+def main():
+    """Run explicitly; importing this module performs no benchmark work."""
+    global AD_RAW_URL, AD_TASKS, API_KEY, BIN_PATH, DATA_DIR, DB_PATH, EMBED_MODEL, GEMINI_MODEL, GRAPH_TOOLS, RAG_TOOLS, RAW_PATH, REPORTS_DIR, REPO_ROOT, VEC_CACHE
+    REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
+
+    DB_PATH = os.path.join(DATA_DIR, "cybersecurity_ad.db")
+
+    RAW_PATH = os.path.join(DATA_DIR, "cybersecurity_raw.json")
+
+    VEC_CACHE = os.path.join(DATA_DIR, "cybersecurity_ad_vectors.json")
+
+    AD_RAW_URL = "https://raw.githubusercontent.com/neo4j-graph-examples/cybersecurity/main/data/cybersecurity-json-data.json"
+
+    ensure_ad_dataset()
+
+    API_KEY = get_api_key()
+
+    if not API_KEY:
+        raise RuntimeError("GOOGLE_API_KEY not found in environment or .env file.")
+
+    GEMINI_MODEL = "gemini-3.8-flash"
+
+    EMBED_MODEL = "models/gemini-embedding-001"
+
+    AD_TASKS = [
+        {
+            "id": "privilege_escalation_path",
+            "name": "Privilege Escalation & ACL Attack Path (3-Hop Transitive)",
+            "prompt": (
+                "You are a cybersecurity auditor investigating Active Directory attack paths. "
+                "Find all non-admin users who have an indirect privilege escalation path (up to 3 hops) to take control over "
+                "an account in 'DOMAIN ADMINS@TestCompany.Local' via group memberships and ACL write permissions (GENERIC_WRITE or GENERIC_ALL). "
+                "Name the users, the intermediate group, the permission type, and the target Domain Admin account."
+            ),
+            "target_users": [
+                "ChinaBracey203@TestCompany.Local",
+                "NannieDeltoro01@TestCompany.Local",
+                "PedroReif62@TestCompany.Local",
+                "ShelaRebolloso75@TestCompany.Local",
+                "ShoshanaDeahl233@TestCompany.Local"
+            ],
+            "intermediate_group": "IT00195@TestCompany.Local",
+            "target_da": "DanielleGallery238@TestCompany.Local"
+        },
+        {
+            "id": "legacy_os_da_sessions",
+            "name": "Critical Credential Dumping Risk (Legacy OS with DA Sessions)",
+            "prompt": (
+                "Audit active sessions across the network to identify critical credential dumping vulnerabilities. "
+                "Identify ALL computers running an outdated/legacy operating system ('Windows 7' or 'Windows Server 2008') "
+                "where any member of 'DOMAIN ADMINS@TestCompany.Local' currently has an active session (HAS_SESSION). "
+                "List the names of these computers and their operating systems."
+            ),
+            "target_computers": [
+                "COMP00017.TestCompany.Local",
+                "COMP00041.TestCompany.Local",
+                "COMP00045.TestCompany.Local",
+                "COMP00051.TestCompany.Local",
+                "COMP00080.TestCompany.Local",
+                "COMP00083.TestCompany.Local",
+                "COMP00117.TestCompany.Local",
+                "COMP00159.TestCompany.Local",
+                "COMP00208.TestCompany.Local",
+                "COMP00218.TestCompany.Local",
+                "COMP00254.TestCompany.Local",
+                "COMP00265.TestCompany.Local",
+                "COMP00274.TestCompany.Local"
+            ]
+        },
+        {
+            "id": "blast_radius_admin_rights",
+            "name": "Exact Administrative Blast Radius (Group-Inherited Admin Rights)",
+            "prompt": (
+                "Audit the blast radius of user 'PedroReif62@TestCompany.Local'. "
+                "List ALL computers in the domain where this user possesses local administrative privileges (ADMIN_TO), "
+                "either directly or inherited through any group memberships. "
+                "What is the exact count of computers and what are their names?"
+            ),
+            "target_count": 4,
+            "target_computers": [
+                "COMP00012.TestCompany.Local",
+                "COMP00081.TestCompany.Local",
+                "COMP00191.TestCompany.Local",
+                "COMP00219.TestCompany.Local"
+            ]
+        }
+    ]
+
+    RAG_TOOLS = [{
+        "function_declarations": [
+            {
+                "name": "vector_search",
+                "description": "Performs semantic vector search across Active Directory entity documentation. Returns top matching documents.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "query": {"type": "STRING", "description": "Natural language query to search Active Directory entities."}
+                    },
+                    "required": ["query"]
+                }
+            },
+            {
+                "name": "get_entity_doc",
+                "description": "Retrieves the full markdown document for an exact entity name or ID.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "name": {"type": "STRING", "description": "Exact name of user, computer, or group."}
+                    },
+                    "required": ["name"]
+                }
+            }
+        ]
+    }]
+
+    GRAPH_TOOLS = [{
+        "function_declarations": [
+            {
+                "name": "graph_query",
+                "description": "Execute an OpenCypher query against the Active Directory knowledge graph.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "query": {"type": "STRING", "description": "OpenCypher query to execute"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        ]
+    }]
+
+    _evaluate()
+
 
 if __name__ == "__main__":
     main()

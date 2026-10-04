@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A **Zero-CGO Model Context Protocol (MCP)** server that equips AI agents with an embedded SQLite Knowledge Graph
-queried via declarative **OpenCypher** with sub-millisecond response times.
+queried via declarative **OpenCypher** without a separate database server.
 
 Powered by [`cypher-sql-go`](https://github.com/vmikhailov/cypher-sql-go) and pure-Go SQLite (`modernc.org/sqlite`).
 
@@ -47,14 +47,14 @@ Evaluations run with autonomous agents powered by **Google Gemini 3.8 Flash** ac
 
 | Benchmark / Dataset | Task Topology | GraphRAG Recall | Plain RAG Recall | GraphRAG Tokens | Plain RAG Tokens | Token Savings | Latency (Graph vs Plain) |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| [**Active Directory Security**](benchmarks/reports/CYBERSECURITY_AD_BENCHMARK.md)<br>(BloodHound: 953 nodes, 4.7k ACLs) | Privilege escalation, credential dumping, blast radius | **100.0%** | 33.3% | **27.9k** | 634.0k | **22.7x fewer** | **12.5s** vs >300s (timeout) |
-| [**MetaQA Colloquial & Typos**](benchmarks/reports/METAQA_COLLOQUIAL_BENCHMARK.md)<br>(134,741 facts, 43k nodes) | 1-3 Hops with typos, nicknames, informal titles | **100.0%** | 33.3% | **7.9k** | 11.8k | **1.5x fewer** | **5.4s** vs 8.8s (timeout) |
-| [**MetaQA Standard Multi-Hop**](benchmarks/reports/METAQA_BENCHMARK_REPORT.md)<br>(134,741 facts, 43k nodes) | 1-hop, 2-hop, 3-hop relationship chaining | **100.0%** | 33.3% | **6.2k** | 14.5k | **2.3x fewer** | **<0.5 ms** vs 250 ms |
-| [**GraphRAG vs Plain Vector RAG**](benchmarks/reports/VECTOR_GRAPH_VS_PLAIN_RAG.md)<br>(Synthetic corporate topology) | Conversational entity linking and 2-hop dependencies | **100.0%** | 50.0% | **8.0k** | 18.6k | **2.3x fewer** | **7.1s** vs 17.8s |
-| [**Enterprise Audit**](benchmarks/reports/ENTERPRISE_250_DOCS_AUDIT.md)<br>(250 corporate docs, 230 services) | Transitive blast radius, unpatched DBs, orphaned services | **100.0%** | 33.3% | **12.4k** | 41.2k | **3.3x fewer** | **9.6s** vs 28.4s |
-| [**2WikiMultihopQA**](benchmarks/reports/2WIKI_MULTIHOP_BENCHMARK.md)<br>(Academic benchmark w/ distractors) | Multi-hop reasoning across distractor documents | **100.0%** | 50.0% | **6.4k** | 18.9k | **3.0x fewer** | **6.8s** vs 15.2s |
-| [**Zero-Shortcut Depth Scaling**](benchmarks/reports/DEPTH_SCALING_BENCHMARK.md)<br>(Branching tree, 1 to 4 hops) | Scaling search depth where intermediate nodes lack shortcuts | **100.0%** | 0.0% | **1.2k** | 14.5k | **12.1x fewer** | **0.4 ms** vs 260 ms |
-| [**Architecture Agent Evals**](benchmarks/reports/AGENT_EVALS.md)<br>(Distributed microservice graph) | Diagnostic multi-hop failure analysis and cascade impact | **100.0%** | 50.0% | **13.8k** | 84.2k | **6.1x fewer** | **14.2s** vs 56.8s |
+| [**Active Directory Security**](benchmarks/reports/CYBERSECURITY_AD_BENCHMARK.md)<br>(BloodHound: 953 nodes, 4.7k ACLs) | Privilege escalation, credential dumping, blast radius | **66.7%** | 33.3% | **14.0k** | 366.7k | **26.2x fewer** | **13.1s** vs 24.6s |
+| [**MetaQA Colloquial & Typos**](benchmarks/reports/METAQA_COLLOQUIAL_BENCHMARK.md)<br>(134,741 facts, 43k nodes) | 1-3 Hops with typos, nicknames, informal titles | **100.0%** (F1: 100%) | 100.0% (F1: 90.9%) | **4.2k** | 5.8k | **1.4x fewer** | **6.3s** vs 20.3s (3.2x faster) |
+| [**MetaQA Standard Multi-Hop**](benchmarks/reports/METAQA_BENCHMARK_REPORT.md)<br>(134,741 facts, 43k nodes) | 1-hop, 2-hop, 3-hop relationship chaining | **100.0%** | 91.7% | **1.4k** | 1.1k | Direct graph traversals | **3.1s** vs 7.6s (2.4x faster) |
+| [**GraphRAG vs Plain Vector RAG**](benchmarks/reports/VECTOR_GRAPH_VS_PLAIN_RAG.md)<br>(Synthetic corporate topology) | Conversational entity linking and 2-hop dependencies | **75.0%** | 87.5% | **21.6k** | 18.3k | Entity linking precision | **18.7s** vs 17.9s |
+| [**Enterprise Audit**](benchmarks/reports/ENTERPRISE_250_DOCS_AUDIT.md)<br>(250 corporate docs, 230 services) | Transitive blast radius, unpatched DBs, orphaned services | **93.8%** | 0.0% (timeouts) | **26.9k** | 39.8k | **1.5x fewer** | **19.8s** vs 29.2s (timeout) |
+| [**2WikiMultihopQA**](benchmarks/reports/2WIKI_MULTIHOP_BENCHMARK.md)<br>(Academic benchmark w/ distractors) | Multi-hop reasoning across distractor documents | **100.0%** | 100.0% | **4.2k** | 1.5k | Structural fact linking | **6.1s** vs 3.2s |
+| [**Zero-Shortcut Depth Scaling**](benchmarks/reports/DEPTH_SCALING_BENCHMARK.md)<br>(Branching tree, 1 to 4 hops) | Scaling search depth where intermediate nodes lack shortcuts | **100.0%** | 75.0% (0% at 4-hop) | **6.6k** | 4.6k | Exhaustive traversal | **12.6s** vs 15.5s (1.6x faster at 4-hop) |
+| [**Architecture Agent Evals**](benchmarks/reports/AGENT_EVALS.md)<br>(Distributed microservice graph) | Diagnostic multi-hop failure analysis and cascade impact | **100.0%** | 100.0% | **4.2k** | 2.7k | Single query paths | **3.8s** vs 12.5s (3.3x faster) |
 | [**Engine Micro-Benchmarks**](benchmarks/reports/BENCHMARKS.md)<br>(Go / SQLite in-process B-Tree) | Point lookups, 2-hop joins, recursive traversal, FTS5 | **100.0%** | 75.0% | **~110 / q** | ~1,800 / q | **16.4x fewer** | **<0.5 ms** vs ~250 ms |
 
 ---
@@ -159,6 +159,51 @@ CREATE INDEX idx_edges_to ON edges(to_id);
 CREATE INDEX idx_edges_kind ON edges(kind);
 CREATE INDEX idx_nodes_kind ON nodes(kind);
 ```
+
+---
+
+## Operational Safety, Migrations & Backups
+
+### Versioned Schema Migrations (`PRAGMA user_version = 1`)
+`cypher-mcp` automatically tracks schema versioning via SQLite's native `PRAGMA user_version`:
+* **V1 Auto-Migration:** On startup, the server inspects `PRAGMA user_version`. If legacy (`user_version = 0`), it automatically dedupes duplicate edges, creates unique indexes (`idx_edges_unique`, `idx_aliases_unique`), initializes the FTS5 search index (`nodes_fts`), and sets `user_version = 1`.
+* **Idempotency:** Subsequent boots skip migration passes, eliminating startup latency.
+* **Corrupt FTS Recovery:** If SQLite reports `no such table: nodes_fts` or virtual table corruption, the migration routine automatically drops and rebuilds the FTS index safely from active node records.
+
+### Live WAL Hot Backups
+SQLite databases in WAL mode cannot be safely backed up by copying the `.db` file alone (as uncommitted transactions and checkpoints reside in `-wal` and `-shm` sidecars).
+Use the included backup script to take atomic, consistent snapshots without pausing the server:
+
+```bash
+# Consistent snapshot of a live database
+python scripts/backup_sqlite.py data/knowledge_graph.db backups/backup_20261004.db
+```
+
+The script:
+1. Connects via read-only URI mode (`?mode=ro`).
+2. Utilizes the SQLite Online Backup API (`sqlite3_backup`).
+3. Executes `PRAGMA integrity_check` and `PRAGMA foreign_key_check` on the completed snapshot.
+4. Performs an atomic `os.link` publication to prevent partial writes.
+
+### Rollback & Disaster Recovery
+To roll back or restore from a backup:
+1. Terminate any running `cypher-mcp` or agent processes pointing to the target database.
+2. Verify the snapshot using `python scripts/backup_sqlite.py <backup.db> <restored_test.db>`.
+3. Atomically replace the database file and remove any stale `-wal` or `-shm` files:
+   ```bash
+   rm -f knowledge_graph.db-wal knowledge_graph.db-shm
+   mv backups/snapshot.db knowledge_graph.db
+   ```
+4. Start `cypher-mcp`. The migration subsystem will verify integrity and schema on boot.
+
+---
+
+## Security Invariants
+
+* **Secure API Credential Handling:** External vector embedding requests (Google Gemini) pass API tokens strictly through the `x-goog-api-key` HTTP request header, never in query string parameters or logs. Outbound error messages are sanitized to strip any tokens before returning to MCP clients.
+* **Connection Pool Isolation:** Writer (`MaxOpenConns = 1`) and reader pools are configured with immutable DSN PRAGMAs (`foreign_keys(1)`, `journal_mode(WAL)`, `busy_timeout(5000)`), preventing database locks or unconstrained concurrent writes.
+* **JSON-RPC 2.0 Conformance:** Fully respects JSON-RPC 2.0 specifications. Notifications are processed silently, and 64-bit integer IDs (`json.RawMessage`) preserve full integer precision without truncation.
+* **Token-Safe Identifier Validation:** Cypher queries strip string literals before validating identifiers, preventing false rejections of valid queries containing words like `match` or `where` inside string values.
 
 ---
 

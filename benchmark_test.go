@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,11 +11,20 @@ import (
 	cyphersql "github.com/vmikhailov/cypher-sql-go"
 )
 
-var (
-	benchDB   *sql.DB
-	benchRODB *sql.DB
-	benchDir  string
-)
+var benchDir string
+
+func deterministicTarget(src, modulus, seed int) int {
+	if modulus <= 1 {
+		return 0
+	}
+	h := uint64(src*10007 + seed*37 + 101)
+	h ^= h >> 16
+	h *= 0x85ebca6b
+	h ^= h >> 13
+	h *= 0xc2b2ae35
+	h ^= h >> 16
+	return int(h % uint64(modulus))
+}
 
 func setupBenchmarkGraph(b *testing.B, numServices int) (*sql.DB, *sql.DB) {
 	tmpDir, err := os.MkdirTemp("", "cypher-mcp-bench-*")
@@ -127,25 +137,36 @@ func setupBenchmarkGraph(b *testing.B, numServices int) (*sql.DB, *sql.DB) {
 			Properties: map[string]any{"mode": "read_write"},
 		})
 
-		// Multi-hop dependencies between services (DAG-like)
+		// Multi-hop dependencies between services (branching tree + cross-branch DAG + cycle)
 		if i > 0 {
-			target1 := fmt.Sprintf("svc:%04d", (i*7)%(i))
+			// 1. Primary tree dependency (depth ~ log3(N))
+			parent1 := (i - 1) / 3
 			edges = append(edges, BatchEdgeItem{
 				From:       fmt.Sprintf("svc:%04d", i),
-				To:         target1,
+				To:         fmt.Sprintf("svc:%04d", parent1),
 				Kind:       "DEPENDS_ON",
 				Properties: map[string]any{"protocol": "gRPC"},
 			})
+			// 2. Secondary cross-branch DAG dependency (deterministic target in [0, i))
 			if i > 2 {
-				target2 := fmt.Sprintf("svc:%04d", (i*13)%(i))
-				if target2 != target1 {
+				parent2 := deterministicTarget(i, i, 1)
+				if parent2 != parent1 {
 					edges = append(edges, BatchEdgeItem{
 						From:       fmt.Sprintf("svc:%04d", i),
-						To:         target2,
+						To:         fmt.Sprintf("svc:%04d", parent2),
 						Kind:       "DEPENDS_ON",
 						Properties: map[string]any{"protocol": "REST"},
 					})
 				}
+			}
+			// 3. Occasional reciprocal cycle for cycle-tolerance testing
+			if i%40 == 0 && i > 10 {
+				edges = append(edges, BatchEdgeItem{
+					From:       fmt.Sprintf("svc:%04d", parent1),
+					To:         fmt.Sprintf("svc:%04d", i),
+					Kind:       "DEPENDS_ON",
+					Properties: map[string]any{"protocol": "EVENT"},
+				})
 			}
 		}
 	}
@@ -186,6 +207,11 @@ func BenchmarkTranspileCypher(b *testing.B) {
 	}
 }
 
+type benchQueryResult struct {
+	Results []map[string]any `json:"results"`
+	Count   int              `json:"count"`
+}
+
 func BenchmarkQuery_1Hop_PointLookup(b *testing.B) {
 	db, dbRO := setupBenchmarkGraph(b, 200)
 	defer db.Close()
@@ -201,8 +227,15 @@ func BenchmarkQuery_1Hop_PointLookup(b *testing.B) {
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
 		}
-		if len(res) == 0 {
-			b.Fatal("empty result")
+		var parsed benchQueryResult
+		if err := json.Unmarshal([]byte(res), &parsed); err != nil {
+			b.Fatalf("unmarshal: %v", err)
+		}
+		if parsed.Count != 1 || len(parsed.Results) != 1 {
+			b.Fatalf("expected exactly 1 row, got %d", parsed.Count)
+		}
+		if parsed.Results[0]["s.name"] != "service-0050" {
+			b.Fatalf("expected s.name == 'service-0050', got %v", parsed.Results[0]["s.name"])
 		}
 	}
 }
@@ -222,8 +255,15 @@ func BenchmarkQuery_2Hop_Join(b *testing.B) {
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
 		}
-		if len(res) == 0 {
-			b.Fatal("empty result")
+		var parsed benchQueryResult
+		if err := json.Unmarshal([]byte(res), &parsed); err != nil {
+			b.Fatalf("unmarshal: %v", err)
+		}
+		if parsed.Count != 1 || len(parsed.Results) != 1 {
+			b.Fatalf("expected exactly 1 row, got %d", parsed.Count)
+		}
+		if parsed.Results[0]["s.name"] != "service-0050" || parsed.Results[0]["db.engine"] != "PostgreSQL" {
+			b.Fatalf("unexpected 2-hop result: %+v", parsed.Results[0])
 		}
 	}
 }
@@ -243,8 +283,15 @@ func BenchmarkQuery_3Hop_TeamToStorage(b *testing.B) {
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
 		}
-		if len(res) == 0 {
-			b.Fatal("empty result")
+		var parsed benchQueryResult
+		if err := json.Unmarshal([]byte(res), &parsed); err != nil {
+			b.Fatalf("unmarshal: %v", err)
+		}
+		if parsed.Count < 1 || len(parsed.Results) < 1 {
+			b.Fatalf("expected count >= 1, got %d", parsed.Count)
+		}
+		if parsed.Results[0]["t.name"] == nil || parsed.Results[0]["s.name"] == nil {
+			b.Fatalf("unexpected 3-hop result: %+v", parsed.Results[0])
 		}
 	}
 }
@@ -264,8 +311,12 @@ func BenchmarkQuery_Recursive_MultiHop(b *testing.B) {
 		if err != nil {
 			b.Fatalf("query failed: %v", err)
 		}
-		if len(res) == 0 {
-			b.Fatal("empty result")
+		var parsed benchQueryResult
+		if err := json.Unmarshal([]byte(res), &parsed); err != nil {
+			b.Fatalf("unmarshal: %v", err)
+		}
+		if parsed.Count < 1 {
+			b.Fatalf("expected at least 1 reachable node, got %d", parsed.Count)
 		}
 	}
 }
@@ -284,8 +335,76 @@ func BenchmarkSearch_FTS5_Trigram(b *testing.B) {
 		if err != nil {
 			b.Fatalf("search failed: %v", err)
 		}
-		if len(res) == 0 {
-			b.Fatal("empty result")
+		var parsed struct {
+			Count   int   `json:"count"`
+			Results []any `json:"results"`
+		}
+		if err := json.Unmarshal([]byte(res), &parsed); err != nil {
+			b.Fatalf("unmarshal: %v", err)
+		}
+		if parsed.Count < 1 {
+			b.Fatalf("expected at least 1 FTS match, got %d", parsed.Count)
+		}
+	}
+}
+
+// ── Disentangled Timing Benchmarks ──────────────────────────────────────────
+
+func BenchmarkTiming_CompileOnly(b *testing.B) {
+	query := "MATCH (s:Service)-[:USES_STORAGE]->(db:Database) WHERE s.id = 'svc:0050' RETURN s.name, db.name, db.engine"
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := cyphersql.Compile(query)
+		if err != nil {
+			b.Fatalf("compile error: %v", err)
+		}
+	}
+}
+
+func BenchmarkTiming_SQLite_ExecuteOnly(b *testing.B) {
+	db, dbRO := setupBenchmarkGraph(b, 200)
+	defer db.Close()
+	defer dbRO.Close()
+	defer os.RemoveAll(benchDir)
+
+	query := "MATCH (s:Service)-[:USES_STORAGE]->(db:Database) WHERE s.id = 'svc:0050' RETURN s.name, db.name, db.engine"
+	compiled, err := cyphersql.Compile(query)
+	if err != nil {
+		b.Fatalf("compile: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		rows, err := dbRO.Query(compiled.SQL)
+		if err != nil {
+			b.Fatalf("query: %v", err)
+		}
+		for rows.Next() {
+			var sName, dbName, engine string
+			_ = rows.Scan(&sName, &dbName, &engine)
+		}
+		rows.Close()
+	}
+}
+
+func BenchmarkTiming_SerializationOnly(b *testing.B) {
+	payload := map[string]any{
+		"results": []map[string]any{
+			{"s.name": "service-0050", "db.name": "db-cluster-050", "db.engine": "PostgreSQL"},
+		},
+		"count":           1,
+		"compiled_sql":    "SELECT ...",
+		"compile_time_us": 12,
+		"execute_time_us": 45,
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, err := json.Marshal(payload)
+		if err != nil {
+			b.Fatalf("marshal: %v", err)
 		}
 	}
 }

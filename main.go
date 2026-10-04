@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,17 +29,38 @@ var (
 )
 
 type JSONRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
+	JSONRPC string           `json:"jsonrpc"`
+	ID      *json.RawMessage `json:"id,omitempty"`
+	Method  string           `json:"method"`
+	Params  json.RawMessage  `json:"params,omitempty"`
 }
 
 type JSONRPCResponse struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
+	JSONRPC string           `json:"jsonrpc"`
+	ID      *json.RawMessage `json:"id"`
+	Result  any              `json:"result,omitempty"`
+	Error   any              `json:"error,omitempty"`
+}
+
+func validateJSONRPCID(rawID *json.RawMessage) error {
+	if rawID == nil {
+		return nil
+	}
+	s := strings.TrimSpace(string(*rawID))
+	if s == "null" {
+		return nil
+	}
+	if s == "true" || s == "false" {
+		return fmt.Errorf("id cannot be a boolean")
+	}
+	if strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") {
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal([]byte(s), &n); err == nil {
+		return nil
+	}
+	return fmt.Errorf("id must be a string, number, or null")
 }
 
 type ToolCallParams struct {
@@ -163,7 +185,7 @@ var serverTools = []map[string]any{
 				"embedding": map[string]any{
 					"type":        "array",
 					"description": "Optional precomputed float32 embedding vector. If omitted, server will auto-embed via Gemini API.",
-					"items": map[string]any{"type": "number"},
+					"items":       map[string]any{"type": "number"},
 				},
 			},
 			"required": []string{"node_id", "alias"},
@@ -357,8 +379,15 @@ var serverTools = []map[string]any{
 	},
 }
 
+const schemaVersion = 1
+
 func initDatabase(dbPath string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	sep := "?"
+	if strings.Contains(dbPath, "?") {
+		sep = "&"
+	}
+	dsn := fmt.Sprintf("%s%s_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)", dbPath, sep)
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
@@ -371,10 +400,39 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
+			db.Close()
 			return nil, fmt.Errorf("execute pragma %s: %w", p, err)
 		}
 	}
 
+	if err := runMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("run migrations: %w", err)
+	}
+
+	return db, nil
+}
+
+func runMigrations(db *sql.DB) error {
+	var currentVersion int
+	if err := db.QueryRow("PRAGMA user_version;").Scan(&currentVersion); err != nil {
+		return fmt.Errorf("read user_version: %w", err)
+	}
+
+	if currentVersion < 1 {
+		if err := migrateToV1(db); err != nil {
+			return fmt.Errorf("migrate to v1: %w", err)
+		}
+	} else {
+		if err := ensureFTSHealthy(db); err != nil {
+			return fmt.Errorf("ensure fts healthy: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func migrateToV1(db *sql.DB) error {
 	tables := `
 		CREATE TABLE IF NOT EXISTS nodes (
 			id TEXT PRIMARY KEY,
@@ -389,7 +447,7 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		);
 	`
 	if _, err := db.Exec(tables); err != nil {
-		return nil, fmt.Errorf("init tables: %w", err)
+		return fmt.Errorf("init tables: %w", err)
 	}
 
 	dedupEdges := `
@@ -401,7 +459,7 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		);
 	`
 	if _, err := db.Exec(dedupEdges); err != nil {
-		return nil, fmt.Errorf("deduplicate edges: %w", err)
+		return fmt.Errorf("deduplicate edges: %w", err)
 	}
 
 	indices := `
@@ -411,14 +469,64 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 	`
 	if _, err := db.Exec(indices); err != nil {
-		return nil, fmt.Errorf("init indices: %w", err)
+		return fmt.Errorf("init indices: %w", err)
 	}
 
 	if err := initVectorTables(db); err != nil {
-		return nil, fmt.Errorf("init vector tables: %w", err)
+		return fmt.Errorf("init vector tables: %w", err)
 	}
 
-	// 1. Full-Text Search (FTS5) table with trigram tokenizer, json_tree value-only indexing, and triggers
+	if err := rebuildFTSIndex(db); err != nil {
+		return fmt.Errorf("init fts: %w", err)
+	}
+
+	schemaDDL := `
+		CREATE TABLE IF NOT EXISTS schema_kinds (
+			kind TEXT PRIMARY KEY COLLATE NOCASE,
+			description TEXT
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_kinds_nocase ON schema_kinds(kind COLLATE NOCASE);
+
+		CREATE TABLE IF NOT EXISTS schema_relations (
+			rel_type TEXT NOT NULL COLLATE NOCASE,
+			from_kind TEXT NOT NULL COLLATE NOCASE,
+			to_kind TEXT NOT NULL COLLATE NOCASE,
+			description TEXT,
+			PRIMARY KEY(rel_type, from_kind, to_kind)
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_relations_nocase ON schema_relations(rel_type COLLATE NOCASE, from_kind COLLATE NOCASE, to_kind COLLATE NOCASE);
+		CREATE INDEX IF NOT EXISTS idx_schema_rel_lookup ON schema_relations(rel_type, from_kind, to_kind);
+
+		CREATE TABLE IF NOT EXISTS schema_changelog (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			action TEXT NOT NULL,
+			entity_type TEXT NOT NULL,
+			entity_name TEXT NOT NULL,
+			details TEXT
+		);
+	`
+	if _, err := db.Exec(schemaDDL); err != nil {
+		return fmt.Errorf("init schema tables: %w", err)
+	}
+
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d;", schemaVersion)); err != nil {
+		return fmt.Errorf("set user_version: %w", err)
+	}
+
+	return nil
+}
+
+func ensureFTSHealthy(db *sql.DB) error {
+	var dummy int
+	err := db.QueryRow("SELECT 1 FROM nodes_fts LIMIT 1;").Scan(&dummy)
+	if err == nil || errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	return rebuildFTSIndex(db)
+}
+
+func rebuildFTSIndex(db *sql.DB) error {
 	ftsDDL := `
 		CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(id, kind, content, tokenize='trigram');
 
@@ -454,10 +562,9 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		END;
 	`
 	if _, err := db.Exec(ftsDDL); err != nil {
-		return nil, fmt.Errorf("init fts5: %w", err)
+		return fmt.Errorf("create fts5 ddl: %w", err)
 	}
 
-	// Re-sync FTS index for all nodes extracting only values via json_tree
 	rebuildFTS := `
 		DELETE FROM nodes_fts;
 		INSERT INTO nodes_fts(rowid, id, kind, content)
@@ -469,49 +576,24 @@ func initDatabase(dbPath string) (*sql.DB, error) {
 		FROM nodes;
 	`
 	if _, err := db.Exec(rebuildFTS); err != nil {
-		return nil, fmt.Errorf("rebuild fts5: %w", err)
+		return fmt.Errorf("populate fts5: %w", err)
 	}
 
-	// 2. Schema governance tables and changelog
-	schemaDDL := `
-		CREATE TABLE IF NOT EXISTS schema_kinds (
-			kind TEXT PRIMARY KEY COLLATE NOCASE,
-			description TEXT
-		);
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_kinds_nocase ON schema_kinds(kind COLLATE NOCASE);
-
-		CREATE TABLE IF NOT EXISTS schema_relations (
-			rel_type TEXT NOT NULL COLLATE NOCASE,
-			from_kind TEXT NOT NULL COLLATE NOCASE,
-			to_kind TEXT NOT NULL COLLATE NOCASE,
-			description TEXT,
-			PRIMARY KEY(rel_type, from_kind, to_kind)
-		);
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_relations_nocase ON schema_relations(rel_type COLLATE NOCASE, from_kind COLLATE NOCASE, to_kind COLLATE NOCASE);
-		CREATE INDEX IF NOT EXISTS idx_schema_rel_lookup ON schema_relations(rel_type, from_kind, to_kind);
-
-		CREATE TABLE IF NOT EXISTS schema_changelog (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-			action TEXT NOT NULL,
-			entity_type TEXT NOT NULL,
-			entity_name TEXT NOT NULL,
-			details TEXT
-		);
-	`
-	if _, err := db.Exec(schemaDDL); err != nil {
-		return nil, fmt.Errorf("init schema tables: %w", err)
-	}
-
-	return db, nil
+	return nil
 }
 
 func initRODatabase(dbPath string) (*sql.DB, error) {
-	sep := "?"
-	if strings.Contains(dbPath, "?") {
-		sep = "&"
+	var dsn string
+	if strings.HasPrefix(dbPath, "file:") {
+		sep := "&"
+		if !strings.Contains(dbPath, "?") {
+			sep = "?"
+		}
+		dsn = fmt.Sprintf("%s%smode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", dbPath, sep)
+	} else {
+		cleanPath := filepath.ToSlash(dbPath)
+		dsn = fmt.Sprintf("file:%s?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", cleanPath)
 	}
-	dsn := fmt.Sprintf("%s%s_query_only=1&_busy_timeout=5000&_defensive=1", dbPath, sep)
 	dbRO, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite ro db: %w", err)
@@ -615,6 +697,68 @@ func stripCommentsAndSpace(s string) string {
 	return sb.String()
 }
 
+func stripCypherStringLiterals(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s))
+	inSingle := false
+	inDouble := false
+	n := len(s)
+	for i := 0; i < n; i++ {
+		ch := s[i]
+		if inSingle {
+			if ch == '\\' && i+1 < n {
+				sb.WriteByte(' ')
+				sb.WriteByte(' ')
+				i++
+				continue
+			}
+			if ch == '\'' {
+				if i+1 < n && s[i+1] == '\'' {
+					sb.WriteByte(' ')
+					sb.WriteByte(' ')
+					i++
+					continue
+				}
+				inSingle = false
+			}
+			sb.WriteByte(' ')
+			continue
+		}
+		if inDouble {
+			if ch == '\\' && i+1 < n {
+				sb.WriteByte(' ')
+				sb.WriteByte(' ')
+				i++
+				continue
+			}
+			if ch == '"' {
+				if i+1 < n && s[i+1] == '"' {
+					sb.WriteByte(' ')
+					sb.WriteByte(' ')
+					i++
+					continue
+				}
+				inDouble = false
+			}
+			sb.WriteByte(' ')
+			continue
+		}
+
+		if ch == '\'' {
+			inSingle = true
+			sb.WriteByte(' ')
+			continue
+		}
+		if ch == '"' {
+			inDouble = true
+			sb.WriteByte(' ')
+			continue
+		}
+		sb.WriteByte(ch)
+	}
+	return sb.String()
+}
+
 // ── Schema Validation Helpers ───────────────────────────────────────────────
 
 func isSchemaEnforced(q dbOrTx, strictFlag bool) (bool, error) {
@@ -713,7 +857,7 @@ func validateEdgeRelation(q dbOrTx, fromKind, toKind, relType string, strictFlag
 	return nil
 }
 
-func validateNodeKindChange(q dbOrTx, id, existingKind, newKind string, strictFlag bool) error {
+func validateNodeKindChange(q dbOrTx, id, existingKind, newKind string, strictFlag bool, batchTargetKinds ...map[string]string) error {
 	enforced, err := isSchemaEnforced(q, strictFlag)
 	if err != nil {
 		return fmt.Errorf("check schema enforcement: %w", err)
@@ -722,48 +866,87 @@ func validateNodeKindChange(q dbOrTx, id, existingKind, newKind string, strictFl
 		return nil
 	}
 
+	var batchMap map[string]string
+	if len(batchTargetKinds) > 0 && batchTargetKinds[0] != nil {
+		batchMap = batchTargetKinds[0]
+	}
+
 	// 1. Check outgoing edges from this node
-	outSQL := `
-		SELECT e.kind, nt.kind
+	outRows, err := q.Query(`
+		SELECT e.kind, e.to_id, nt.kind
 		FROM edges e
 		JOIN nodes nt ON e.to_id = nt.id
 		WHERE e.from_id = ?
-		  AND NOT EXISTS (
-			  SELECT 1 FROM schema_relations sr
-			  WHERE sr.rel_type = e.kind COLLATE NOCASE
-			    AND sr.from_kind = ? COLLATE NOCASE
-			    AND sr.to_kind = nt.kind COLLATE NOCASE
-		  )
-		LIMIT 1;
-	`
-	var outRel, outTargetKind string
-	err = q.QueryRow(outSQL, id, newKind).Scan(&outRel, &outTargetKind)
-	if err == nil {
-		return fmt.Errorf("schema validation error: cannot change kind of node '%s' from '%s' to '%s': outgoing relationship (:%s)-[:%s]->(:%s) is not permitted by schema", id, existingKind, newKind, newKind, outRel, outTargetKind)
-	} else if err != sql.ErrNoRows {
-		return fmt.Errorf("validate outgoing edges on kind change: %w", err)
+	`, id)
+	if err != nil {
+		return fmt.Errorf("query outgoing edges on kind change: %w", err)
+	}
+	defer outRows.Close()
+
+	type invalidEdgeDesc struct {
+		rel        string
+		targetKind string
+		sourceKind string
+	}
+	var invalidOut *invalidEdgeDesc
+
+	for outRows.Next() {
+		var rel, toID, dbTargetKind string
+		if err := outRows.Scan(&rel, &toID, &dbTargetKind); err != nil {
+			return fmt.Errorf("scan outgoing edge: %w", err)
+		}
+		targetKind := dbTargetKind
+		if toID == id {
+			targetKind = newKind
+		} else if bKind, ok := batchMap[toID]; ok {
+			targetKind = bKind
+		}
+		if err := validateEdgeRelation(q, newKind, targetKind, rel, strictFlag); err != nil {
+			invalidOut = &invalidEdgeDesc{rel: rel, targetKind: targetKind}
+			break
+		}
+	}
+	if err := outRows.Err(); err != nil {
+		return fmt.Errorf("iterate outgoing edges: %w", err)
+	}
+	if invalidOut != nil {
+		return fmt.Errorf("schema validation error: cannot change kind of node '%s' from '%s' to '%s': outgoing relationship (:%s)-[:%s]->(:%s) is not permitted by schema", id, existingKind, newKind, newKind, invalidOut.rel, invalidOut.targetKind)
 	}
 
 	// 2. Check incoming edges to this node
-	inSQL := `
-		SELECT e.kind, nf.kind
+	inRows, err := q.Query(`
+		SELECT e.kind, e.from_id, nf.kind
 		FROM edges e
 		JOIN nodes nf ON e.from_id = nf.id
 		WHERE e.to_id = ?
-		  AND NOT EXISTS (
-			  SELECT 1 FROM schema_relations sr
-			  WHERE sr.rel_type = e.kind COLLATE NOCASE
-			    AND sr.from_kind = nf.kind COLLATE NOCASE
-			    AND sr.to_kind = ? COLLATE NOCASE
-		  )
-		LIMIT 1;
-	`
-	var inRel, inSourceKind string
-	err = q.QueryRow(inSQL, id, newKind).Scan(&inRel, &inSourceKind)
-	if err == nil {
-		return fmt.Errorf("schema validation error: cannot change kind of node '%s' from '%s' to '%s': incoming relationship (:%s)-[:%s]->(:%s) is not permitted by schema", id, existingKind, newKind, inSourceKind, inRel, newKind)
-	} else if err != sql.ErrNoRows {
-		return fmt.Errorf("validate incoming edges on kind change: %w", err)
+	`, id)
+	if err != nil {
+		return fmt.Errorf("query incoming edges on kind change: %w", err)
+	}
+	defer inRows.Close()
+
+	var invalidIn *invalidEdgeDesc
+	for inRows.Next() {
+		var rel, fromID, dbSourceKind string
+		if err := inRows.Scan(&rel, &fromID, &dbSourceKind); err != nil {
+			return fmt.Errorf("scan incoming edge: %w", err)
+		}
+		sourceKind := dbSourceKind
+		if fromID == id {
+			sourceKind = newKind
+		} else if bKind, ok := batchMap[fromID]; ok {
+			sourceKind = bKind
+		}
+		if err := validateEdgeRelation(q, sourceKind, newKind, rel, strictFlag); err != nil {
+			invalidIn = &invalidEdgeDesc{rel: rel, sourceKind: sourceKind}
+			break
+		}
+	}
+	if err := inRows.Err(); err != nil {
+		return fmt.Errorf("iterate incoming edges: %w", err)
+	}
+	if invalidIn != nil {
+		return fmt.Errorf("schema validation error: cannot change kind of node '%s' from '%s' to '%s': incoming relationship (:%s)-[:%s]->(:%s) is not permitted by schema", id, existingKind, newKind, invalidIn.sourceKind, invalidIn.rel, newKind)
 	}
 
 	return nil
@@ -782,8 +965,9 @@ func handleGraphQuery(db *sql.DB, cypherQuery string, options ...any) (string, e
 func handleGraphQueryContext(ctx context.Context, db *sql.DB, cypherQuery string, options ...any) (string, error) {
 	start := time.Now()
 
-	// Defense-in-depth: check unsafe identifiers
-	for _, m := range backtickRegex.FindAllStringSubmatch(cypherQuery, -1) {
+	// Defense-in-depth: check unsafe identifiers (only outside string literals)
+	strippedQuery := stripCypherStringLiterals(cypherQuery)
+	for _, m := range backtickRegex.FindAllStringSubmatch(strippedQuery, -1) {
 		if !safeIdentifierRegex.MatchString(m[1]) {
 			return "", fmt.Errorf("invalid identifier %q: only alphanumeric characters and underscores are permitted", m[1])
 		}
@@ -798,6 +982,9 @@ func handleGraphQueryContext(ctx context.Context, db *sql.DB, cypherQuery string
 		case int:
 			maxRows = v
 		}
+	}
+	if maxRows < 0 {
+		return "", fmt.Errorf("invalid limit %d: must be >= 0", maxRows)
 	}
 
 	compiled, err := cyphersql.CompileWithParams(cypherQuery, params)
@@ -1330,6 +1517,38 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 		return "No nodes or edges provided in batch.", nil
 	}
 
+	// Pre-validate all nodes and edges before starting transaction
+	for i, n := range nodes {
+		id := strings.TrimSpace(n.ID)
+		kind := strings.TrimSpace(n.Kind)
+		if id == "" {
+			return "", fmt.Errorf("node[%d]: id cannot be empty", i)
+		}
+		if kind == "" {
+			return "", fmt.Errorf("node[%d] (%s): kind cannot be empty", i, id)
+		}
+		if err := cyphersql.ValidateIdentifier("kind", kind); err != nil {
+			return "", fmt.Errorf("node[%d] (%s): %w", i, id, err)
+		}
+	}
+	for i, e := range edges {
+		from := strings.TrimSpace(e.From)
+		to := strings.TrimSpace(e.To)
+		kind := strings.TrimSpace(e.Kind)
+		if from == "" {
+			return "", fmt.Errorf("edge[%d]: from cannot be empty", i)
+		}
+		if to == "" {
+			return "", fmt.Errorf("edge[%d]: to cannot be empty", i)
+		}
+		if kind == "" {
+			return "", fmt.Errorf("edge[%d]: kind cannot be empty", i)
+		}
+		if err := cyphersql.ValidateIdentifier("relationship type", kind); err != nil {
+			return "", fmt.Errorf("edge[%d]: %w", i, err)
+		}
+	}
+
 	tx, err := db.Begin()
 	if err != nil {
 		return "", fmt.Errorf("begin transaction: %w", err)
@@ -1346,6 +1565,20 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 		return "", fmt.Errorf("prepare node upsert: %w", err)
 	}
 	defer nodeStmt.Close()
+
+	// Precompute canonical target kinds for all nodes in the batch to coordinate migrations
+	batchTargetKinds := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		id := strings.TrimSpace(n.ID)
+		kind := strings.TrimSpace(n.Kind)
+		if id != "" && kind != "" {
+			var canonicalKind string
+			if err := tx.QueryRow("SELECT kind FROM schema_kinds WHERE kind = ? COLLATE NOCASE", kind).Scan(&canonicalKind); err == nil {
+				kind = canonicalKind
+			}
+			batchTargetKinds[id] = kind
+		}
+	}
 
 	// 1. Process and upsert nodes
 	upsertedNodes := 0
@@ -1373,7 +1606,7 @@ func handleBatchUpsert(db *sql.DB, nodes []BatchNodeItem, edges []BatchEdgeItem,
 		// Validate relationship consistency if updating an existing node's kind
 		var existingKind string
 		if err := tx.QueryRow("SELECT kind FROM nodes WHERE id = ?", id).Scan(&existingKind); err == nil && !strings.EqualFold(existingKind, kind) {
-			if err := validateNodeKindChange(tx, id, existingKind, kind, isStrict); err != nil {
+			if err := validateNodeKindChange(tx, id, existingKind, kind, isStrict, batchTargetKinds); err != nil {
 				return "", fmt.Errorf("node[%d] (%s): %w", i, id, err)
 			}
 		}
@@ -1715,6 +1948,9 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 
 		if opts.MigrateTo != "" {
 			migrateTo := strings.TrimSpace(opts.MigrateTo)
+			if strings.EqualFold(kind, migrateTo) {
+				return "", fmt.Errorf("cannot migrate kind '%s' to itself", kind)
+			}
 			if err := cyphersql.ValidateIdentifier("kind", migrateTo); err != nil {
 				return "", fmt.Errorf("invalid migrate_to kind %q: %w", migrateTo, err)
 			}
@@ -1724,6 +1960,22 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 				return "", fmt.Errorf("migrate_to target kind '%s' does not exist in schema", migrateTo)
 			}
 			migrateTo = targetCanonical
+
+			// Pre-clean duplicate schema_relations to avoid UNIQUE constraint violations
+			if _, err := tx.Exec(`
+				DELETE FROM schema_relations 
+				WHERE from_kind = ? COLLATE NOCASE
+				  AND (rel_type, ?, to_kind) IN (SELECT rel_type, from_kind, to_kind FROM schema_relations)
+			`, kind, migrateTo); err != nil {
+				return "", fmt.Errorf("pre-clean schema relations from_kind: %w", err)
+			}
+			if _, err := tx.Exec(`
+				DELETE FROM schema_relations 
+				WHERE to_kind = ? COLLATE NOCASE
+				  AND (rel_type, from_kind, ?) IN (SELECT rel_type, from_kind, to_kind FROM schema_relations)
+			`, kind, migrateTo); err != nil {
+				return "", fmt.Errorf("pre-clean schema relations to_kind: %w", err)
+			}
 
 			if _, err := tx.Exec("UPDATE nodes SET kind = ? WHERE kind = ?", migrateTo, kind); err != nil {
 				return "", fmt.Errorf("migrate nodes: %w", err)
@@ -1891,6 +2143,15 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 			return "", fmt.Errorf("'relation', 'from_kind', and 'to_kind' are required for remove_relation")
 		}
 
+		// Ensure the relation exists in schema_relations
+		var relRuleExists int
+		if err := db.QueryRow("SELECT count(*) FROM schema_relations WHERE rel_type = ? COLLATE NOCASE AND from_kind = ? COLLATE NOCASE AND to_kind = ? COLLATE NOCASE", relation, fromKind, toKind).Scan(&relRuleExists); err != nil {
+			return "", fmt.Errorf("check schema relation: %w", err)
+		}
+		if relRuleExists == 0 {
+			return "", fmt.Errorf("relationship (%s)-[:%s]->(%s) not found in schema", fromKind, relation, toKind)
+		}
+
 		// Count existing edges matching this relation
 		var edgeCount int
 		countSQL := `
@@ -1918,9 +2179,20 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 
 		if opts.MigrateTo != "" {
 			migrateTo := strings.TrimSpace(opts.MigrateTo)
+			if strings.EqualFold(relation, migrateTo) {
+				return "", fmt.Errorf("cannot migrate relation '%s' to itself", relation)
+			}
 			if err := cyphersql.ValidateIdentifier("relationship type", migrateTo); err != nil {
 				return "", fmt.Errorf("invalid migrate_to relation %q: %w", migrateTo, err)
 			}
+			var targetRelExists int
+			if err := tx.QueryRow("SELECT count(*) FROM schema_relations WHERE rel_type = ? COLLATE NOCASE AND from_kind = ? COLLATE NOCASE AND to_kind = ? COLLATE NOCASE", migrateTo, fromKind, toKind).Scan(&targetRelExists); err != nil {
+				return "", fmt.Errorf("check target schema relation: %w", err)
+			}
+			if targetRelExists == 0 {
+				return "", fmt.Errorf("migrate_to relation '%s' between '%s' and '%s' does not exist in schema", migrateTo, fromKind, toKind)
+			}
+
 			migrateSQL := `
 				UPDATE edges SET kind = ?
 				WHERE kind = ? COLLATE NOCASE
@@ -1975,8 +2247,53 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 		if relation == "" || newRelation == "" {
 			return "", fmt.Errorf("'relation' and 'new_relation' are required for rename_relation")
 		}
+		if (fromKind != "" && toKind == "") || (fromKind == "" && toKind != "") {
+			return "", fmt.Errorf("both 'from_kind' and 'to_kind' must be provided for scoped rename_relation, or both omitted for global rename")
+		}
 		if err := cyphersql.ValidateIdentifier("relationship type", newRelation); err != nil {
 			return "", err
+		}
+
+		if fromKind != "" && toKind != "" {
+			var existingCount int
+			if err := db.QueryRow("SELECT count(*) FROM schema_relations WHERE rel_type = ? COLLATE NOCASE AND from_kind = ? COLLATE NOCASE AND to_kind = ? COLLATE NOCASE", relation, fromKind, toKind).Scan(&existingCount); err != nil {
+				return "", fmt.Errorf("check schema relation: %w", err)
+			}
+			if existingCount == 0 {
+				return "", fmt.Errorf("relationship (%s)-[:%s]->(%s) not found in schema", fromKind, relation, toKind)
+			}
+
+			var collisionCount int
+			if err := db.QueryRow("SELECT count(*) FROM schema_relations WHERE rel_type = ? COLLATE NOCASE AND from_kind = ? COLLATE NOCASE AND to_kind = ? COLLATE NOCASE", newRelation, fromKind, toKind).Scan(&collisionCount); err != nil {
+				return "", fmt.Errorf("check destination relation: %w", err)
+			}
+			if collisionCount > 0 {
+				return "", fmt.Errorf("cannot rename relation '%s' to '%s': relationship (%s)-[:%s]->(%s) already exists in schema", relation, newRelation, fromKind, newRelation, toKind)
+			}
+		} else {
+			var rulesFound int
+			if err := db.QueryRow("SELECT count(*) FROM schema_relations WHERE rel_type = ? COLLATE NOCASE", relation).Scan(&rulesFound); err != nil {
+				return "", fmt.Errorf("check schema relations: %w", err)
+			}
+			if rulesFound == 0 {
+				return "", fmt.Errorf("relationship '%s' not found in schema", relation)
+			}
+
+			var collisionCount int
+			if err := db.QueryRow(`
+				SELECT count(*) 
+				FROM schema_relations s1
+				JOIN schema_relations s2 
+				  ON s1.from_kind = s2.from_kind COLLATE NOCASE 
+				 AND s1.to_kind = s2.to_kind COLLATE NOCASE
+				WHERE s1.rel_type = ? COLLATE NOCASE 
+				  AND s2.rel_type = ? COLLATE NOCASE
+			`, relation, newRelation).Scan(&collisionCount); err != nil {
+				return "", fmt.Errorf("check global relation collision: %w", err)
+			}
+			if collisionCount > 0 {
+				return "", fmt.Errorf("cannot rename relation '%s' to '%s': one or more schema rules already define '%s' between the same kinds", relation, newRelation, newRelation)
+			}
 		}
 
 		tx, err := db.Begin()
@@ -2029,6 +2346,189 @@ func handleSchemaDefine(db *sql.DB, action, kind, relation, fromKind, toKind, de
 
 	default:
 		return "", fmt.Errorf("unknown schema action '%s'. Allowed: add_kind, remove_kind, rename_kind, add_relation, remove_relation, rename_relation", action)
+	}
+}
+
+// executeToolCall strictly parses and validates arguments before executing the designated tool
+func executeToolCall(db, dbRO *sql.DB, toolName string, arguments map[string]any, isStrict bool) (string, error) {
+	switch toolName {
+	case "graph_query":
+		query, _ := arguments["query"].(string)
+		queryParams, _ := arguments["params"].(map[string]any)
+		effectiveLimit := defaultMaxRows
+		if lVal, ok := arguments["limit"]; ok {
+			switch v := lVal.(type) {
+			case float64:
+				effectiveLimit = int(v)
+			case int:
+				effectiveLimit = v
+			}
+		}
+		if effectiveLimit < 0 {
+			return "", fmt.Errorf("invalid 'limit': %d (must be >= 0)", effectiveLimit)
+		}
+		return handleGraphQuery(dbRO, query, queryParams, effectiveLimit)
+
+	case "graph_search":
+		query, _ := arguments["query"].(string)
+		kindFilter, _ := arguments["kind"].(string)
+		limit := 10
+		if lVal, ok := arguments["limit"]; ok {
+			switch v := lVal.(type) {
+			case float64:
+				limit = int(v)
+			case int:
+				limit = v
+			}
+		}
+		if limit <= 0 {
+			return "", fmt.Errorf("invalid 'limit': %d (must be > 0)", limit)
+		}
+		return handleGraphSearch(dbRO, query, kindFilter, limit)
+
+	case "graph_resolve_entity":
+		query, _ := arguments["query"].(string)
+		kindFilter, _ := arguments["kind"].(string)
+		limit := 5
+		if lVal, ok := arguments["limit"]; ok {
+			switch v := lVal.(type) {
+			case float64:
+				limit = int(v)
+			case int:
+				limit = v
+			}
+		}
+		if limit <= 0 {
+			return "", fmt.Errorf("invalid 'limit': %d (must be > 0)", limit)
+		}
+		minScore := 0.50
+		if sVal, ok := arguments["min_score"]; ok {
+			switch v := sVal.(type) {
+			case float64:
+				minScore = v
+			case int:
+				minScore = float64(v)
+			default:
+				return "", fmt.Errorf("invalid 'min_score': expected number, got %T", sVal)
+			}
+		}
+		if minScore < 0.0 || minScore > 1.0 {
+			return "", fmt.Errorf("invalid 'min_score': %f (must be between 0.0 and 1.0)", minScore)
+		}
+		return handleResolveEntity(dbRO, query, kindFilter, limit, minScore)
+
+	case "graph_upsert_alias":
+		nodeID, _ := arguments["node_id"].(string)
+		alias, _ := arguments["alias"].(string)
+		var explicitVec []float32
+		if rawVec, ok := arguments["embedding"]; ok && rawVec != nil {
+			vecSlice, isSlice := rawVec.([]any)
+			if !isSlice {
+				return "", fmt.Errorf("invalid 'embedding': expected array of numbers, got %T", rawVec)
+			}
+			for idx, v := range vecSlice {
+				f, ok := v.(float64)
+				if !ok {
+					return "", fmt.Errorf("invalid 'embedding[%d]': expected number, got %T", idx, v)
+				}
+				explicitVec = append(explicitVec, float32(f))
+			}
+		}
+		return handleUpsertAlias(db, nodeID, alias, explicitVec)
+
+	case "graph_batch_upsert":
+		var batchNodes []BatchNodeItem
+		if rawNodes, exists := arguments["nodes"]; exists && rawNodes != nil {
+			if _, isSlice := rawNodes.([]any); !isSlice {
+				return "", fmt.Errorf("invalid 'nodes': expected an array of node objects, got %T", rawNodes)
+			}
+			b, err := json.Marshal(rawNodes)
+			if err != nil {
+				return "", fmt.Errorf("marshal 'nodes': %w", err)
+			}
+			if err := json.Unmarshal(b, &batchNodes); err != nil {
+				return "", fmt.Errorf("invalid 'nodes' array: %w", err)
+			}
+		}
+		var batchEdges []BatchEdgeItem
+		if rawEdges, exists := arguments["edges"]; exists && rawEdges != nil {
+			if _, isSlice := rawEdges.([]any); !isSlice {
+				return "", fmt.Errorf("invalid 'edges': expected an array of edge objects, got %T", rawEdges)
+			}
+			b, err := json.Marshal(rawEdges)
+			if err != nil {
+				return "", fmt.Errorf("marshal 'edges': %w", err)
+			}
+			if err := json.Unmarshal(b, &batchEdges); err != nil {
+				return "", fmt.Errorf("invalid 'edges' array: %w", err)
+			}
+		}
+		return handleBatchUpsert(db, batchNodes, batchEdges, isStrict)
+
+	case "graph_set_node":
+		id, _ := arguments["id"].(string)
+		kind, _ := arguments["kind"].(string)
+		var props map[string]any
+		if rawProps, exists := arguments["properties"]; exists && rawProps != nil {
+			var ok bool
+			props, ok = rawProps.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("invalid 'properties': expected JSON object, got %T", rawProps)
+			}
+		}
+		merge := true
+		if mVal, ok := arguments["merge"].(bool); ok {
+			merge = mVal
+		}
+		return handleSetNode(db, id, kind, props, isStrict, merge)
+
+	case "graph_set_edge":
+		from, _ := arguments["from"].(string)
+		to, _ := arguments["to"].(string)
+		kind, _ := arguments["kind"].(string)
+		var props map[string]any
+		if rawProps, exists := arguments["properties"]; exists && rawProps != nil {
+			var ok bool
+			props, ok = rawProps.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("invalid 'properties': expected JSON object, got %T", rawProps)
+			}
+		}
+		merge := true
+		if mVal, ok := arguments["merge"].(bool); ok {
+			merge = mVal
+		}
+		return handleSetEdge(db, from, to, kind, props, isStrict, merge)
+
+	case "graph_delete_node":
+		id, _ := arguments["id"].(string)
+		return handleDeleteNode(db, id)
+
+	case "graph_schema":
+		return handleSchema(dbRO, isStrict)
+
+	case "graph_schema_define":
+		action, _ := arguments["action"].(string)
+		kind, _ := arguments["kind"].(string)
+		relation, _ := arguments["relation"].(string)
+		fromKind, _ := arguments["from_kind"].(string)
+		toKind, _ := arguments["to_kind"].(string)
+		description, _ := arguments["description"].(string)
+		newKind, _ := arguments["new_kind"].(string)
+		newRelation, _ := arguments["new_relation"].(string)
+		cascade, _ := arguments["cascade"].(bool)
+		migrateTo, _ := arguments["migrate_to"].(string)
+		opts := SchemaDefineOptions{
+			AllowSchemaEdit: true,
+			Cascade:         cascade,
+			MigrateTo:       migrateTo,
+			NewKind:         newKind,
+			NewRelation:     newRelation,
+		}
+		return handleSchemaDefine(db, action, kind, relation, fromKind, toKind, description, opts)
+
+	default:
+		return "", fmt.Errorf("unknown tool: %s", toolName)
 	}
 }
 
@@ -2095,6 +2595,10 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 	writer := bufio.NewWriter(out)
 
 	sendResponse := func(resp JSONRPCResponse) {
+		if resp.ID == nil && resp.Error == nil {
+			// Do not send responses to notifications
+			return
+		}
 		b, err := json.Marshal(resp)
 		if err != nil {
 			logMsg("Failed to marshal response: %v", err)
@@ -2112,6 +2616,18 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 		if len(trimmed) > 0 {
 			logMsg("IN: %s", trimmed)
 
+			if strings.HasPrefix(trimmed, "[") {
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      nil,
+					Error: map[string]any{
+						"code":    -32600,
+						"message": "Invalid Request: batch requests are not supported",
+					},
+				})
+				continue
+			}
+
 			var req JSONRPCRequest
 			if errUnmarshal := json.Unmarshal([]byte(trimmed), &req); errUnmarshal != nil {
 				logMsg("JSON unmarshal error: %v", errUnmarshal)
@@ -2123,249 +2639,146 @@ func runServerWithConfig(in io.Reader, out io.Writer, db, dbRO *sql.DB, logger *
 						"message": "Parse error",
 					},
 				})
-			} else {
-				switch req.Method {
-				case "initialize":
+				continue
+			}
+
+			if errID := validateJSONRPCID(req.ID); errID != nil {
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: map[string]any{
+						"code":    -32600,
+						"message": fmt.Sprintf("Invalid Request: %v", errID),
+					},
+				})
+				continue
+			}
+
+			if req.JSONRPC != "2.0" {
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: map[string]any{
+						"code":    -32600,
+						"message": "Invalid Request: jsonrpc must be '2.0'",
+					},
+				})
+				continue
+			}
+
+			switch req.Method {
+			case "initialize":
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: map[string]any{
+						"protocolVersion": "2024-11-05",
+						"capabilities": map[string]any{
+							"tools":     map[string]any{},
+							"resources": map[string]any{},
+							"prompts":   map[string]any{},
+						},
+						"serverInfo": map[string]any{
+							"name":    "cypher-graph-mcp",
+							"version": "0.3.3",
+						},
+					},
+				})
+
+			case "notifications/initialized":
+				logMsg("Client initialized notification received")
+
+			case "ping":
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result:  map[string]any{},
+				})
+
+			case "resources/list":
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: map[string]any{
+						"resources": []any{},
+					},
+				})
+
+			case "prompts/list":
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: map[string]any{
+						"prompts": []any{},
+					},
+				})
+
+			case "logging/setLevel":
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result:  map[string]any{},
+				})
+
+			case "tools/list":
+				sendResponse(JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: map[string]any{
+						"tools": serverTools,
+					},
+				})
+
+			case "tools/call":
+				var params ToolCallParams
+				if err := json.Unmarshal(req.Params, &params); err != nil {
 					sendResponse(JSONRPCResponse{
 						JSONRPC: "2.0",
 						ID:      req.ID,
-						Result: map[string]any{
-							"protocolVersion": "2024-11-05",
-							"capabilities": map[string]any{
-								"tools":     map[string]any{},
-								"resources": map[string]any{},
-								"prompts":   map[string]any{},
-							},
-							"serverInfo": map[string]any{
-								"name":    "cypher-graph-mcp",
-								"version": "0.3.3",
+						Error: map[string]any{
+							"code":    -32602,
+							"message": "Invalid params",
+						},
+					})
+					continue
+				}
+
+				outText, callErr := executeToolCall(db, dbRO, params.Name, params.Arguments, isStrict)
+
+				if callErr != nil {
+					sendResponse(JSONRPCResponse{
+						JSONRPC: "2.0",
+						ID:      req.ID,
+						Result: ToolResult{
+							IsError: true,
+							Content: []ToolContent{
+								{Type: "text", Text: callErr.Error()},
 							},
 						},
 					})
-
-				case "notifications/initialized":
-					logMsg("Client initialized notification received")
-
-				case "ping":
+				} else {
 					sendResponse(JSONRPCResponse{
 						JSONRPC: "2.0",
 						ID:      req.ID,
-						Result:  map[string]any{},
-					})
-
-				case "resources/list":
-					sendResponse(JSONRPCResponse{
-						JSONRPC: "2.0",
-						ID:      req.ID,
-						Result: map[string]any{
-							"resources": []any{},
+						Result: ToolResult{
+							Content: []ToolContent{
+								{Type: "text", Text: outText},
+							},
 						},
 					})
+				}
 
-				case "prompts/list":
+			default:
+				logMsg("Unhandled method: %s", req.Method)
+				if req.ID != nil {
 					sendResponse(JSONRPCResponse{
 						JSONRPC: "2.0",
 						ID:      req.ID,
-						Result: map[string]any{
-							"prompts": []any{},
+						Error: map[string]any{
+							"code":    -32601,
+							"message": fmt.Sprintf("Method not found: %s", req.Method),
 						},
 					})
-
-				case "logging/setLevel":
-					sendResponse(JSONRPCResponse{
-						JSONRPC: "2.0",
-						ID:      req.ID,
-						Result:  map[string]any{},
-					})
-
-				case "tools/list":
-					sendResponse(JSONRPCResponse{
-						JSONRPC: "2.0",
-						ID:      req.ID,
-						Result: map[string]any{
-							"tools": serverTools,
-						},
-					})
-
-				case "tools/call":
-					var params ToolCallParams
-					if err := json.Unmarshal(req.Params, &params); err != nil {
-						sendResponse(JSONRPCResponse{
-							JSONRPC: "2.0",
-							ID:      req.ID,
-							Error: map[string]any{
-								"code":    -32602,
-								"message": "Invalid params",
-							},
-						})
-						continue
-					}
-
-					var outText string
-					var callErr error
-
-					switch params.Name {
-					case "graph_query":
-						query, _ := params.Arguments["query"].(string)
-						queryParams, _ := params.Arguments["params"].(map[string]any)
-						effectiveLimit := defaultMaxRows
-						if lVal, ok := params.Arguments["limit"]; ok {
-							switch v := lVal.(type) {
-							case float64:
-								effectiveLimit = int(v)
-							case int:
-								effectiveLimit = v
-							}
-						}
-						outText, callErr = handleGraphQuery(dbRO, query, queryParams, effectiveLimit)
-
-					case "graph_search":
-						query, _ := params.Arguments["query"].(string)
-						kindFilter, _ := params.Arguments["kind"].(string)
-						limit := 10
-						if lVal, ok := params.Arguments["limit"]; ok {
-							switch v := lVal.(type) {
-							case float64:
-								limit = int(v)
-							case int:
-								limit = v
-							}
-						}
-						outText, callErr = handleGraphSearch(dbRO, query, kindFilter, limit)
-
-					case "graph_resolve_entity":
-						query, _ := params.Arguments["query"].(string)
-						kindFilter, _ := params.Arguments["kind"].(string)
-						limit := 5
-						if lVal, ok := params.Arguments["limit"]; ok {
-							switch v := lVal.(type) {
-							case float64:
-								limit = int(v)
-							case int:
-								limit = v
-							}
-						}
-						minScore := 0.50
-						if sVal, ok := params.Arguments["min_score"]; ok {
-							if v, ok := sVal.(float64); ok {
-								minScore = v
-							}
-						}
-						outText, callErr = handleResolveEntity(dbRO, query, kindFilter, limit, minScore)
-
-					case "graph_upsert_alias":
-						nodeID, _ := params.Arguments["node_id"].(string)
-						alias, _ := params.Arguments["alias"].(string)
-						var explicitVec []float32
-						if rawVec, ok := params.Arguments["embedding"].([]any); ok {
-							for _, v := range rawVec {
-								if f, ok := v.(float64); ok {
-									explicitVec = append(explicitVec, float32(f))
-								}
-							}
-						}
-						outText, callErr = handleUpsertAlias(db, nodeID, alias, explicitVec)
-
-					case "graph_batch_upsert":
-						var batchNodes []BatchNodeItem
-						if rawNodes, ok := params.Arguments["nodes"]; ok && rawNodes != nil {
-							b, _ := json.Marshal(rawNodes)
-							_ = json.Unmarshal(b, &batchNodes)
-						}
-						var batchEdges []BatchEdgeItem
-						if rawEdges, ok := params.Arguments["edges"]; ok && rawEdges != nil {
-							b, _ := json.Marshal(rawEdges)
-							_ = json.Unmarshal(b, &batchEdges)
-						}
-						outText, callErr = handleBatchUpsert(db, batchNodes, batchEdges, isStrict)
-
-					case "graph_set_node":
-						id, _ := params.Arguments["id"].(string)
-						kind, _ := params.Arguments["kind"].(string)
-						props, _ := params.Arguments["properties"].(map[string]any)
-						merge := true
-						if mVal, ok := params.Arguments["merge"].(bool); ok {
-							merge = mVal
-						}
-						outText, callErr = handleSetNode(db, id, kind, props, isStrict, merge)
-
-					case "graph_set_edge":
-						from, _ := params.Arguments["from"].(string)
-						to, _ := params.Arguments["to"].(string)
-						kind, _ := params.Arguments["kind"].(string)
-						props, _ := params.Arguments["properties"].(map[string]any)
-						merge := true
-						if mVal, ok := params.Arguments["merge"].(bool); ok {
-							merge = mVal
-						}
-						outText, callErr = handleSetEdge(db, from, to, kind, props, isStrict, merge)
-
-					case "graph_delete_node":
-						id, _ := params.Arguments["id"].(string)
-						outText, callErr = handleDeleteNode(db, id)
-
-					case "graph_schema":
-						outText, callErr = handleSchema(dbRO, isStrict)
-
-					case "graph_schema_define":
-						action, _ := params.Arguments["action"].(string)
-						kind, _ := params.Arguments["kind"].(string)
-						relation, _ := params.Arguments["relation"].(string)
-						fromKind, _ := params.Arguments["from_kind"].(string)
-						toKind, _ := params.Arguments["to_kind"].(string)
-						description, _ := params.Arguments["description"].(string)
-						newKind, _ := params.Arguments["new_kind"].(string)
-						newRelation, _ := params.Arguments["new_relation"].(string)
-						cascade, _ := params.Arguments["cascade"].(bool)
-						migrateTo, _ := params.Arguments["migrate_to"].(string)
-						opts := SchemaDefineOptions{
-							AllowSchemaEdit: true,
-							Cascade:         cascade,
-							MigrateTo:       migrateTo,
-							NewKind:         newKind,
-							NewRelation:     newRelation,
-						}
-						outText, callErr = handleSchemaDefine(db, action, kind, relation, fromKind, toKind, description, opts)
-
-					default:
-						callErr = fmt.Errorf("unknown tool: %s", params.Name)
-					}
-
-					if callErr != nil {
-						sendResponse(JSONRPCResponse{
-							JSONRPC: "2.0",
-							ID:      req.ID,
-							Result: ToolResult{
-								IsError: true,
-								Content: []ToolContent{
-									{Type: "text", Text: callErr.Error()},
-								},
-							},
-						})
-					} else {
-						sendResponse(JSONRPCResponse{
-							JSONRPC: "2.0",
-							ID:      req.ID,
-							Result: ToolResult{
-								Content: []ToolContent{
-									{Type: "text", Text: outText},
-								},
-							},
-						})
-					}
-
-				default:
-					logMsg("Unhandled method: %s", req.Method)
-					if req.ID != nil {
-						sendResponse(JSONRPCResponse{
-							JSONRPC: "2.0",
-							ID:      req.ID,
-							Error: map[string]any{
-								"code":    -32601,
-								"message": fmt.Sprintf("Method not found: %s", req.Method),
-							},
-						})
-					}
 				}
 			}
 		}

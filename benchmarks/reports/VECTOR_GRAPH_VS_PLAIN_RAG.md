@@ -8,8 +8,8 @@ Evaluator: `Google Gemini 3.8 Flash` | Embedding Model: `gemini-embedding-001`
 
 | Paradigm | Avg Recall | Avg Turns | Avg Latency | Avg Tokens |
 | :--- | :--- | :--- | :--- | :--- |
-| **GraphRAG (cypher-mcp)** | **50.0%** | **8.5** | **16.5s** | **23569** |
-| **Plain Vector RAG** | **76.8%** | **6.8** | **18.0s** | **19066** |
+| **GraphRAG (cypher-mcp)** | **75.0%** | **8.0** | **19.2s** | **21643** |
+| **Plain Vector RAG** | **87.5%** | **6.8** | **17.9s** | **18616** |
 
 ## Detailed Task Results
 
@@ -20,21 +20,22 @@ Evaluator: `Google Gemini 3.8 Flash` | Embedding Model: `gemini-embedding-001`
 | Metric | Plain Vector RAG | GraphRAG (cypher-mcp) |
 | :--- | :--- | :--- |
 | **Fact Recall** | **50.0%** | **100.0%** |
-| **Turns to Answer** | 10 | 4 |
-| **Tool Calls** | 9 | 7 |
-| **Latency** | 17.76s | 7.08s |
-| **Token Usage** | 18570 | 8032 |
+| **Turns to Answer** | 8 | 4 |
+| **Tool Calls** | 7 | 5 |
+| **Latency** | 14.51s | 6.93s |
+| **Token Usage** | 13995 | 6627 |
 
 **Plain RAG Answer:**
-> Да, пользователь в чате прав — это действительно сервис Саши.
+> Да, шлюз авторизации действительно находится в зоне ответственности Саши.
 
-* **Полное имя ответственного инженера:** Александр Иванов (*Alexander Ivanov*, в Slack упоминается как «Саша» или «Alex»).
-* **Точная роль по отношению к сервису:** Владелец и мейнтейнер (*Owner and Maintainer*) сервиса `svc:auth-gateway`.
+Согласно архитектурной документации сервиса (`svc:auth-gateway`):
+* **Полное имя:** Александр Иванов (**Alexander Ivanov**, в Slack известен как *Саша* или *Alex*).
+* **Точная роль по отношению к сервису:** Владелец и ответственный за сопровождение сервиса (**Owner and Maintainer** — *owned and maintained by Alexander Ivanov*). Также он управляет сопутствующими компонентами авторизационного контура: сервисом `svc:user-store` и базами данных `db:postgres-users` и `db:redis-session`.
 
 **GraphRAG Answer:**
-> Да, шлюз авторизации (**Auth Gateway** / `svc:auth-gateway`) действительно находится в зоне ответственности Саши.
+> Да, сервис **Auth Gateway** (`svc:auth-gateway`) действительно закреплен за Сашей.
 
-* **Полное имя ответственного:** Alexander Ivanov (Александр Иванов)
+* **Полное имя ответственного инженера:** Alexander Ivanov (Александр Иванов)
 * **Точная роль:** Staff Architect
 
 ---
@@ -46,22 +47,24 @@ Evaluator: `Google Gemini 3.8 Flash` | Embedding Model: `gemini-embedding-001`
 | Metric | Plain Vector RAG | GraphRAG (cypher-mcp) |
 | :--- | :--- | :--- |
 | **Fact Recall** | **100.0%** | **0.0%** |
-| **Turns to Answer** | 4 | 10 |
-| **Tool Calls** | 3 | 10 |
-| **Latency** | 11.79s | 20.17s |
-| **Token Usage** | 3633 | 24195 |
+| **Turns to Answer** | 5 | 10 |
+| **Tool Calls** | 4 | 10 |
+| **Latency** | 14.23s | 25.02s |
+| **Token Usage** | 5541 | 25580 |
 
 **Plain RAG Answer:**
 > Сервер базы данных, от которой зависит платежный воркер (`svc:payment-worker`), расположен в следующем датацентре:
 
 * **Город:** Франкфурт-на-Майне (Frankfurt am Main, Германия)
-* **Название зоны (датацентра):** `dc:frankfurt-zone-1`
+* **Название зоны / датацентра:** `dc:frankfurt-zone-1` (Frankfurt Zone 1)
+
+---
 
 ### Цепочка зависимостей:
-1. Сервис **`svc:payment-worker`** напрямую зависит от **`svc:billing-engine`** для получения инвойсов.
-2. Сервис **`svc:billing-engine`** использует базу данных **`db:postgres-orders`** для хранения счетов и финансовых записей.
+1. Воркер **`svc:payment-worker`** напрямую зависит от сервиса **`svc:billing-engine`**.
+2. Сервис **`svc:billing-engine`** зависит от базы данных **`db:postgres-orders`**.
 3. База данных **`db:postgres-orders`** размещена на физическом сервере **`srv:db-node-01`**.
-4. Физический сервер **`srv:db-node-01`** находится в датацентре **`dc:frankfurt-zone-1`** (г. Франкфурт-на-Майне).
+4. Сервер **`srv:db-node-01`** физически находится в датацентре **`dc:frankfurt-zone-1`** (Франкфурт-на-Майне).
 
 **GraphRAG Answer:**
 > TIMEOUT / MAX TURNS EXCEEDED
@@ -74,85 +77,86 @@ Evaluator: `Google Gemini 3.8 Flash` | Embedding Model: `gemini-embedding-001`
 
 | Metric | Plain Vector RAG | GraphRAG (cypher-mcp) |
 | :--- | :--- | :--- |
-| **Fact Recall** | **57.1%** | **100.0%** |
-| **Turns to Answer** | 9 | 10 |
-| **Tool Calls** | 8 | 9 |
-| **Latency** | 31.9s | 21.51s |
-| **Token Usage** | 43581 | 31105 |
+| **Fact Recall** | **100.0%** | **100.0%** |
+| **Turns to Answer** | 7 | 9 |
+| **Tool Calls** | 6 | 8 |
+| **Latency** | 24.99s | 22.61s |
+| **Token Usage** | 27118 | 30853 |
 
 **Plain RAG Answer:**
-> При отказе кэш-сервера **`srv:cache-01`** цепочка зависимостей и список затронутых компонентов формируются следующим образом:
+> При отказе сервера **`srv:cache-01`** цепочка зависимостей и список затронутых сервисов и инженеров выглядят следующим образом:
 
 ---
 
-### Цепочка зависимостей и затронутые сервисы/компоненты
-
-1. **`db:redis-session`** (Кэш сессий)
-   * **Размещение:** Физически развернут на упавшем сервере `srv:cache-01`.
-   * **Владелец / ответственный:** Александр Иванов («Саша»).
-
-2. **`svc:auth-gateway`** (Шлюз аутентификации и выдачи JWT)
-   * **Зависимость:** Напрямую зависит от `db:redis-session` для проверки токенов сессий.
-   * **Владелец:** Александр Иванов («Саша» / «Alex»).
-
-3. **`svc:billing-engine`** (Движок подписок и биллинга)
-   * **Зависимость:** Напрямую зависит от `svc:auth-gateway` для валидации пользователей.
-   * **Владелец:** Дмитрий Смирнов («Дима» / «Dima»).
-
-4. **`svc:payment-worker`** (Фоновый сервис обработки платежей)
-   * **Зависимость:** Напрямую зависит от `svc:billing-engine` для получения счетов и отправляет события в `mq:kafka-events`.
-   * **Владелец:** Дмитрий Смирнов («Дима»).
-
-5. **`svc:fraud-detector`** (Сервис антифрода в реальном времени)
-   * **Зависимость:** Напрямую потребляет транзакции от `svc:payment-worker`.
-   * **Владелец:** Елена Кузнецова («Лена» / «Helen»).
-
-6. **Сервисы-подписчики очереди событий (`mq:kafka-events`)**, затронутые из-за нарушения потока транзакций от `svc:payment-worker`:
-   * **`svc:notification-dispatcher`** (Транзакционные SMS и email) — слушает события из `mq:kafka-events`.  
-     *Владелец:* Ольга Соколова («Оля»).
-   * **`svc:audit-logger`** (Логирование финансовых операций и безопасности) — потребляет события из `mq:kafka-events`.  
-     *Владелец:* Елена Кузнецова («Лена»).
+### 1. Первоисточник сбоя и инфраструктурный компонент
+* **`db:redis-session`** — база данных сессионного кэша, размещенная непосредственно на физическом сервере `srv:cache-01`.
+  * **Ответственный:** Александр Иванов (*Alexander Ivanov*, в Slack — «Саша» / *Alex*).
 
 ---
 
-### Инженеры, которых необходимо вызвать в war room
+### 2. Цепочка затронутых сервисов (Downstream-зависимости)
 
-1. **Александр Иванов** (`Саша` / `Alex`) — владелец упавшей инфраструктуры кэша `db:redis-session` и сервиса `svc:auth-gateway`.
-2. **Дмитрий Смирнов** (`Дима` / `Dima`) — владелец сервисов `svc:billing-engine` и `svc:payment-worker`.
-3. **Елена Кузнецова** (`Лена` / `Helen`) — владелец сервисов `svc:fraud-detector` и `svc:audit-logger`.
-4. **Ольга Соколова** (`Оля`) — владелец сервиса `svc:notification-dispatcher`.
+1. **`svc:auth-gateway`**
+   * **Связь:** Напрямую зависит от `db:redis-session` для валидации сессионных токенов и аутентификации.
+   * **Владелец:** Александр Иванов (*Alexander Ivanov* / «Саша» / *Alex*).
+
+2. **`svc:billing-engine`**
+   * **Связь:** Напрямую зависит от `svc:auth-gateway` для валидации пользователей при обработке подписок и счетов.
+   * **Владелец:** Дмитрий Смирнов (*Dmitry Smirnov* / «Дима» / *Dima*).
+
+3. **`svc:payment-worker`**
+   * **Связь:** Фоновый демон напрямую зависит от `svc:billing-engine` (получение счетов для выполнения транзакций) и отправляет события в `mq:kafka-events`.
+   * **Владелец:** Дмитрий Смирнов (*Dmitry Smirnov* / «Дима»).
+
+4. **`svc:fraud-detector`**
+   * **Связь:** Напрямую потребляет поток транзакций от `svc:payment-worker` для антифрод-проверок в реальном времени.
+   * **Владелец:** Елена Кузнецова (*Elena Kuznetsova* / «Лена» / *Helen*).
+
+5. **`svc:notification-dispatcher`**
+   * **Связь:** Подписан на очередь событий `mq:kafka-events`, куда публикует `svc:payment-worker`; при сбое генерации платежных событий перестанет получать и отправлять уведомления (SMS/Email).
+   * **Владелец:** Ольга Соколова (*Olga Sokolova* / «Оля»).
+
+6. **`svc:audit-logger`**
+   * **Связь:** Вычитывает поток сообщений из `mq:kafka-events` для аудита и записи в `db:clickhouse-lake`.
+   * **Владелец:** Елена Кузнецова (*Elena Kuznetsova* / «Лена»).
+
+*(Косвенно также может быть затронут сервис **`svc:analytics-api`** под управлением Михаила Попова (*Mikhail Popov* / «Миша»), так как прекратится поступление свежих данных в `db:clickhouse-lake` через `svc:audit-logger`).*
+
+---
+
+### 3. Инженеры, которых необходимо вызвать в War Room
+
+1. **Александр Иванов (Саша / Alex)** — владелец `db:redis-session` и `svc:auth-gateway`.
+2. **Дмитрий Смирнов (Дима / Dima)** — владелец `svc:billing-engine` и `svc:payment-worker`.
+3. **Елена Кузнецова (Лена / Helen)** — владелец `svc:fraud-detector` и `svc:audit-logger`.
+4. **Ольга Соколова (Оля)** — владелец `svc:notification-dispatcher`.
+5. *(Опционально)* **Михаил Попов (Миша / Mike)** — владелец хранилища аналитики `db:clickhouse-lake` и сервиса `svc:analytics-api` (для контроля задержек в отчетности).
 
 **GraphRAG Answer:**
-> В результате отказа кэш-сервера **`srv:cache-01`** выходит из строя размещенная на нем база сессий **`db:redis-session` (Redis Session)**.
+> При отказе кэш-сервера **`srv:cache-01`** выходит из строя размещённая на нём база данных **`db:redis-session`** (`Redis Session`).
+
+### 1. Затронутые сервисы (по цепочке зависимостей):
+
+1. **`svc:auth-gateway`** (*Auth Gateway*) — напрямую зависит от `db:redis-session`.
+2. **`svc:billing-engine`** (*Billing Engine*) — зависит от `svc:auth-gateway`.
+3. **`svc:payment-worker`** (*Payment Worker*) — зависит от `svc:billing-engine`.
+4. **`svc:fraud-detector`** (*Fraud Detector*) — зависит от `svc:payment-worker`.
+
+*Цепочка распространения сбоя:*  
+`srv:cache-01` → `db:redis-session` → `svc:auth-gateway` → `svc:billing-engine` → `svc:payment-worker` → `svc:fraud-detector`.
 
 ---
 
-### 1. Цепочка влияния и затронутые сервисы
+### 2. Инженеры для вызова в war room:
 
-По графу зависимостей (`DEPENDS_ON`) сбой распространяется следующим образом:
+1. **Alexander Ivanov** (`person:alexander`, *Staff Architect*)  
+   — Владелец сервиса **`svc:auth-gateway`** (а также самой базы данных **`db:redis-session`**).
 
-1. **`svc:auth-gateway` (Auth Gateway)** — *прямая зависимость*: сервис напрямую зависит от `db:redis-session`.
-2. **`svc:billing-engine` (Billing Engine)** — *транзитивная зависимость 1-го уровня*: сервис зависит от `svc:auth-gateway`.
-3. **`svc:payment-worker` (Payment Worker)** — *транзитивная зависимость 2-го уровня*: сервис зависит от `svc:billing-engine`.
-4. **`svc:fraud-detector` (Fraud Detector)** — *транзитивная зависимость 3-го уровня*: сервис зависит от `svc:payment-worker`.
+2. **Dmitry Smirnov** (`person:dmitry`, *SRE Lead*)  
+   — Владелец сервисов **`svc:billing-engine`** и **`svc:payment-worker`**.
 
-**Всего затронуто сервисов: 4**
-* `svc:auth-gateway` (Auth Gateway)
-* `svc:billing-engine` (Billing Engine)
-* `svc:payment-worker` (Payment Worker)
-* `svc:fraud-detector` (Fraud Detector)
-
----
-
-### 2. Инженеры (владельцы затронутых сервисов) для вызова в War Room
-
-1. **Alexander Ivanov** (`person:alexander`, *Staff Architect*)
-   * Владелец сервиса: **Auth Gateway** (`svc:auth-gateway`)
-   * *(Также является владельцем отказавшей базы данных `db:redis-session`)*
-2. **Dmitry Smirnov** (`person:dmitry`, *SRE Lead*)
-   * Владелец сервисов: **Billing Engine** (`svc:billing-engine`) и **Payment Worker** (`svc:payment-worker`)
-3. **Elena Kuznetsova** (`person:elena`, *Security Lead*)
-   * Владелец сервиса: **Fraud Detector** (`svc:fraud-detector`)
+3. **Elena Kuznetsova** (`person:elena`, *Security Lead*)  
+   — Владелец сервиса **`svc:fraud-detector`**.
 
 ---
 
@@ -162,25 +166,55 @@ Evaluator: `Google Gemini 3.8 Flash` | Embedding Model: `gemini-embedding-001`
 
 | Metric | Plain Vector RAG | GraphRAG (cypher-mcp) |
 | :--- | :--- | :--- |
-| **Fact Recall** | **100.0%** | **0.0%** |
-| **Turns to Answer** | 4 | 10 |
-| **Tool Calls** | 3 | 10 |
-| **Latency** | 10.41s | 17.18s |
-| **Token Usage** | 10481 | 30946 |
+| **Fact Recall** | **100.0%** | **100.0%** |
+| **Turns to Answer** | 7 | 9 |
+| **Tool Calls** | 6 | 8 |
+| **Latency** | 17.84s | 22.36s |
+| **Token Usage** | 27813 | 23513 |
 
 **Plain RAG Answer:**
-> В инфраструктуре зарегистрировано **8 микросервисов** (`kind: 'Service'`), из которых **3** зависят от брокера сообщений `mq:kafka-events` (`svc:notification-dispatcher`, `svc:audit-logger`, `svc:payment-worker`).
+> В инфраструктуре представлено всего 8 микросервисов (`kind: 'Service'`), из которых **5** напрямую **НЕ зависят** от брокера сообщений Kafka (`mq:kafka-events`).
 
-**НЕ зависят** от `mq:kafka-events` ровно **5 микросервисов**:
+### Точное количество:
+**5 микросервисов**
 
-1. **`svc:analytics-api`** — напрямую опрашивает `db:clickhouse-lake` и не публикует события в Kafka.
-2. **`svc:auth-gateway`** — зависит напрямую от `svc:user-store` и базы `db:redis-session`.
-3. **`svc:billing-engine`** — зависит от `svc:auth-gateway` и базы `db:postgres-orders`.
-4. **`svc:fraud-detector`** — напрямую потребляет транзакции из `svc:payment-worker` и обращается к `svc:user-store`.
-5. **`svc:user-store`** — зависит только от базы `db:postgres-users`.
+### Идентификаторы микросервисов:
+1. **`svc:user-store`** — зависит только от базы данных `db:postgres-users`.
+2. **`svc:auth-gateway`** — зависит напрямую от `svc:user-store` и `db:redis-session`.
+3. **`svc:billing-engine`** — зависит напрямую от `svc:auth-gateway` и `db:postgres-orders`.
+4. **`svc:fraud-detector`** — напрямую получает данные от `svc:payment-worker` и обращается к `svc:user-store`.
+5. **`svc:analytics-api`** — напрямую опрашивает `db:clickhouse-lake` и явным образом не публикует данные в Kafka.
+
+---
+*(Остальные 3 сервиса зависят от `mq:kafka-events`: `svc:payment-worker` отправляет в него события, а `svc:notification-dispatcher` и `svc:audit-logger` считывают сообщения).*
 
 **GraphRAG Answer:**
-> TIMEOUT / MAX TURNS EXCEEDED
+> В инфраструктуре всего **8** микросервисов (`kind: 'Service'`). В зависимости от того, учитываются ли только прямые связи или также транзитивные (косвенные), результат следующий:
+
+---
+
+### 1. С точки зрения прямых зависимостей (`NOT (s)-[:DEPENDS_ON]->(kafka)`)
+Прямой связи с брокером `mq:kafka-events` не имеют **5 микросервисов**:
+
+1. `svc:auth-gateway` (Auth Gateway)
+2. `svc:billing-engine` (Billing Engine)
+3. `svc:fraud-detector` (Fraud Detector)
+4. `svc:analytics-api` (Analytics API)
+5. `svc:user-store` (User Store)
+
+*(Напрямую зависят 3 сервиса: `svc:payment-worker`, `svc:audit-logger`, `svc:notification-dispatcher`).*
+
+---
+
+### 2. С точки зрения транзитивных (косвенных) зависимостей (`NOT (s)-[:DEPENDS_ON*]->(kafka)`)
+Если учитывать цепочки зависимостей, сервис `svc:fraud-detector` зависит от `svc:payment-worker`, который обращается к Kafka. 
+
+С учётом этого полностью независимыми (ни прямо, ни транзитивно) являются **4 микросервиса**:
+
+1. `svc:auth-gateway`
+2. `svc:billing-engine`
+3. `svc:analytics-api`
+4. `svc:user-store`
 
 ---
 

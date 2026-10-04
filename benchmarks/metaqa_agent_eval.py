@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 MetaQA Multi-Hop QA Benchmark:
 Comparing cypher-mcp (Knowledge Graph) vs Text Search RAG on 134k Real Facts.
@@ -8,41 +7,28 @@ Evaluator Model: Google Gemini 3.8 Flash
 """
 
 import os
+
 import sys
+
 import time
+
 import json
+
 import sqlite3
+
 import subprocess
+
 import urllib.request
+
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(__file__))
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from common import get_api_key, get_paths
+
+from common import get_api_key, get_paths, reap_process
+
 from index_metaqa import ensure_metaqa
-
-REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
-DB_PATH = os.path.join(DATA_DIR, "metaqa.db")
-ensure_metaqa(DB_PATH)
-
-# 1. Load API Key
-api_key = get_api_key()
-if not api_key:
-    print("Error: GOOGLE_API_KEY not found in environment or .env file.")
-    sys.exit(1)
-
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
-
-# 2. Tool Implementations
-
-# A. Graph Agent: cypher-mcp process
-mcp_proc = subprocess.Popen(
-    [BIN_PATH, "--db", DB_PATH],
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True
-)
 
 def rpc_mcp(method, params, req_id=1):
     req = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
@@ -50,8 +36,6 @@ def rpc_mcp(method, params, req_id=1):
     mcp_proc.stdin.flush()
     line = mcp_proc.stdout.readline()
     return json.loads(line)
-
-rpc_mcp("initialize", {"protocolVersion": "2024-11-05", "clientInfo": {"name": "eval"}}, 1)
 
 def tool_graph_query(query_str):
     resp = rpc_mcp("tools/call", {
@@ -65,10 +49,6 @@ def tool_graph_query(query_str):
         return res
     except Exception as e:
         return f"Error: {e}"
-
-# B. Text Search / RAG Agent: FTS5 on 135k facts
-con_fts = sqlite3.connect(DB_PATH)
-cur_fts = con_fts.cursor()
 
 def tool_search_facts(query_str, limit=15):
     try:
@@ -88,7 +68,6 @@ def tool_search_facts(query_str, limit=15):
     except Exception as e:
         return f"Search error: {e}"
 
-# 3. Gemini Helper
 def call_gemini(contents, tools=None):
     payload = {"contents": contents}
     if tools:
@@ -98,7 +77,6 @@ def call_gemini(contents, tools=None):
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
-# 4. Agent Session Runner
 def run_metaqa_agent(agent_type, question_text):
     start_time = time.time()
 
@@ -211,93 +189,133 @@ def run_metaqa_agent(agent_type, question_text):
         "duration_ms": duration_ms
     }
 
-# 5. Define MetaQA Benchmark Suite (1-hop, 2-hop, 3-hop)
-TASKS = [
-    {
-        "id": "1-Hop: Direct Filmography",
-        "question": "what films did [Michelle Trachtenberg] star in?",
-        "ground_truth": ["inspector gadget", "black christmas", "ice princess", "harriet the spy", "the scribbler"]
-    },
-    {
-        "id": "2-Hop: Co-Stars to Directors",
-        "question": "which person directed the movies starred by [John Krasinski]?",
-        "ground_truth": ["nancy meyers", "sam mendes", "george clooney", "ken kwapis", "luke greenfield"]
-    },
-    {
-        "id": "3-Hop: Shared Director Cross-Language Reachability",
-        "question": "the films that share directors with the film [Catch Me If You Can] were in which languages?",
-        "ground_truth": ["german", "polish", "mende", "japanese"]
-    }
-]
+def main():
+    """Run explicitly; importing this module performs no benchmark work."""
+    global AGENTS, BIN_PATH, DATA_DIR, DB_PATH, GEMINI_URL, REPORTS_DIR, REPO_ROOT, TASKS, ag, ans_lower, api_key, avg_lat, avg_rec, avg_toks, avg_turns, con_fts, cur_fts, f, k, matched, mcp_proc, r, report_path, res, results, score, t, t_id, task, tc
+    REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
-print("=== Starting MetaQA Multi-Hop Benchmark (Gemini 3.8 Flash) ===")
-AGENTS = ["cypher-mcp", "text-search"]
-results = {t["id"]: {} for t in TASKS}
+    DB_PATH = os.path.join(DATA_DIR, "metaqa.db")
 
-for task in TASKS:
-    print(f"\n==========================================")
-    print(f"EVALUATING: {task['id']}")
-    print(f"Question: {task['question']}")
-    print(f"==========================================")
+    ensure_metaqa(DB_PATH)
 
-    for ag in AGENTS:
-        print(f"  Running Agent: [{ag}] ...")
-        res = run_metaqa_agent(ag, task["question"])
+    api_key = get_api_key()
 
-        ans_lower = res["final_answer"].lower()
-        matched = [k for k in task["ground_truth"] if k in ans_lower]
-        score = len(matched) / len(task["ground_truth"])
-        res["score"] = score
-        res["matched"] = matched
+    if not api_key:
+        print("Error: GOOGLE_API_KEY not found in environment or .env file.")
+        sys.exit(1)
 
-        print(f"    -> Turns: {res['turns']} | Tokens: {res['tokens_in']}+{res['tokens_out']} | Latency: {res['duration_ms']:.1f}ms | Recall: {len(matched)}/{len(task['ground_truth'])} ({score*100:.0f}%)")
-        results[task["id"]][ag] = res
+    GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
 
-# Cleanup
-mcp_proc.kill()
-con_fts.close()
+    mcp_proc = None
+    con_fts = None
+    try:
+        mcp_proc = subprocess.Popen(
+            [BIN_PATH, "--db", DB_PATH],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
 
-# 6. Generate Markdown Report
-report_path = os.path.join(REPORTS_DIR, "METAQA_BENCHMARK_REPORT.md")
-with open(report_path, "w", encoding="utf-8") as f:
-    f.write("# MetaQA Multi-Hop QA Benchmark: cypher-mcp vs Text RAG\n\n")
-    f.write("Empirical benchmark on the standard **MetaQA** movie knowledge graph:\n")
-    f.write("- **Corpus:** 43,170 nodes, 117,565 edges, 134,741 triples\n")
-    f.write("- **Model:** Google Gemini 3.8 Flash (Function Calling)\n\n")
+        rpc_mcp("initialize", {"protocolVersion": "2024-11-05", "clientInfo": {"name": "eval"}}, 1)
 
-    f.write("## 1. Multi-Hop Performance Matrix\n\n")
-    f.write("| Task | Agent | Recall / Completeness | Turns | Tokens (In / Out) | Latency |\n")
-    f.write("| :--- | :--- | :---: | :---: | :---: | :---: |\n")
+        con_fts = sqlite3.connect(DB_PATH)
 
-    for task in TASKS:
-        t_id = task["id"]
+        cur_fts = con_fts.cursor()
+
+        TASKS = [
+            {
+                "id": "1-Hop: Direct Filmography",
+                "question": "what films did [Michelle Trachtenberg] star in?",
+                "ground_truth": ["inspector gadget", "black christmas", "ice princess", "harriet the spy", "the scribbler"]
+            },
+            {
+                "id": "2-Hop: Co-Stars to Directors",
+                "question": "which person directed the movies starred by [John Krasinski]?",
+                "ground_truth": ["nancy meyers", "sam mendes", "george clooney", "ken kwapis", "luke greenfield"]
+            },
+            {
+                "id": "3-Hop: Shared Director Cross-Language Reachability",
+                "question": "the films that share directors with the film [Catch Me If You Can] were in which languages?",
+                "ground_truth": ["german", "polish", "mende", "japanese"]
+            }
+        ]
+
+        print("=== Starting MetaQA Multi-Hop Benchmark (Gemini 3.8 Flash) ===")
+
+        AGENTS = ["cypher-mcp", "text-search"]
+
+        results = {t["id"]: {} for t in TASKS}
+
+        for task in TASKS:
+            print(f"\n==========================================")
+            print(f"EVALUATING: {task['id']}")
+            print(f"Question: {task['question']}")
+            print(f"==========================================")
+
+            for ag in AGENTS:
+                print(f"  Running Agent: [{ag}] ...")
+                res = run_metaqa_agent(ag, task["question"])
+
+                ans_lower = res["final_answer"].lower()
+                matched = [k for k in task["ground_truth"] if k in ans_lower]
+                score = len(matched) / len(task["ground_truth"])
+                res["score"] = score
+                res["matched"] = matched
+
+                print(f"    -> Turns: {res['turns']} | Tokens: {res['tokens_in']}+{res['tokens_out']} | Latency: {res['duration_ms']:.1f}ms | Recall: {len(matched)}/{len(task['ground_truth'])} ({score*100:.0f}%)")
+                results[task["id"]][ag] = res
+    finally:
+        if con_fts:
+            con_fts.close()
+        reap_process(mcp_proc)
+
+    report_path = os.path.join(REPORTS_DIR, "METAQA_BENCHMARK_REPORT.md")
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("# MetaQA Multi-Hop QA Benchmark: cypher-mcp vs Text RAG\n\n")
+        f.write("Empirical benchmark on the standard **MetaQA** movie knowledge graph:\n")
+        f.write("- **Corpus:** 43,170 nodes, 117,565 edges, 134,741 triples\n")
+        f.write("- **Model:** Google Gemini 3.8 Flash (Function Calling)\n\n")
+
+        f.write("## 1. Multi-Hop Performance Matrix\n\n")
+        f.write("| Task | Agent | Recall / Completeness | Turns | Tokens (In / Out) | Latency |\n")
+        f.write("| :--- | :--- | :---: | :---: | :---: | :---: |\n")
+
+        for task in TASKS:
+            t_id = task["id"]
+            for ag in AGENTS:
+                r = results[t_id][ag]
+                f.write(f"| **{t_id}** | `{ag}` | **{r['score']*100:.0f}%** ({len(r['matched'])}/{len(task['ground_truth'])}) | {r['turns']} | {r['tokens_in']} / {r['tokens_out']} | {r['duration_ms']:.0f} ms |\n")
+
+        f.write("\n## 2. Quantitative Summary\n\n")
+        f.write("| Agent | Overall Recall | Avg Turns | Avg Tokens (Total) | Avg Latency |\n")
+        f.write("| :--- | :---: | :---: | :---: | :---: |\n")
+
         for ag in AGENTS:
-            r = results[t_id][ag]
-            f.write(f"| **{t_id}** | `{ag}` | **{r['score']*100:.0f}%** ({len(r['matched'])}/{len(task['ground_truth'])}) | {r['turns']} | {r['tokens_in']} / {r['tokens_out']} | {r['duration_ms']:.0f} ms |\n")
+            avg_rec = sum(results[t["id"]][ag]["score"] for t in TASKS) / len(TASKS) * 100
+            avg_turns = sum(results[t["id"]][ag]["turns"] for t in TASKS) / len(TASKS)
+            avg_toks = sum(results[t["id"]][ag]["tokens_in"] + results[t["id"]][ag]["tokens_out"] for t in TASKS) / len(TASKS)
+            avg_lat = sum(results[t["id"]][ag]["duration_ms"] for t in TASKS) / len(TASKS)
+            f.write(f"| **{ag}** | **{avg_rec:.1f}%** | **{avg_turns:.1f}** | **{avg_toks:.0f}** | **{avg_lat:.0f} ms** |\n")
 
-    f.write("\n## 2. Quantitative Summary\n\n")
-    f.write("| Agent | Overall Recall | Avg Turns | Avg Tokens (Total) | Avg Latency |\n")
-    f.write("| :--- | :---: | :---: | :---: | :---: |\n")
+        f.write("\n## 3. Detailed Transcripts\n\n")
+        for task in TASKS:
+            t_id = task["id"]
+            f.write(f"### {t_id}\n\n")
+            f.write(f"**Question:** `{task['question']}`\n\n")
+            f.write(f"**Ground Truth:** `{', '.join(task['ground_truth'])}`\n\n")
+            for ag in AGENTS:
+                r = results[t_id][ag]
+                f.write(f"#### Agent: `{ag}`\n\n")
+                f.write("**Tool Calls:**\n")
+                for tc in r["tool_calls"]:
+                    f.write(f"- `{tc['name']}`: `{json.dumps(tc['args'])}`\n")
+                f.write(f"\n**Answer:**\n\n{r['final_answer']}\n\n---\n\n")
 
-    for ag in AGENTS:
-        avg_rec = sum(results[t["id"]][ag]["score"] for t in TASKS) / len(TASKS) * 100
-        avg_turns = sum(results[t["id"]][ag]["turns"] for t in TASKS) / len(TASKS)
-        avg_toks = sum(results[t["id"]][ag]["tokens_in"] + results[t["id"]][ag]["tokens_out"] for t in TASKS) / len(TASKS)
-        avg_lat = sum(results[t["id"]][ag]["duration_ms"] for t in TASKS) / len(TASKS)
-        f.write(f"| **{ag}** | **{avg_rec:.1f}%** | **{avg_turns:.1f}** | **{avg_toks:.0f}** | **{avg_lat:.0f} ms** |\n")
+    print(f"\n[DONE] MetaQA benchmark finished! Report written to {report_path}")
 
-    f.write("\n## 3. Detailed Transcripts\n\n")
-    for task in TASKS:
-        t_id = task["id"]
-        f.write(f"### {t_id}\n\n")
-        f.write(f"**Question:** `{task['question']}`\n\n")
-        f.write(f"**Ground Truth:** `{', '.join(task['ground_truth'])}`\n\n")
-        for ag in AGENTS:
-            r = results[t_id][ag]
-            f.write(f"#### Agent: `{ag}`\n\n")
-            f.write("**Tool Calls:**\n")
-            for tc in r["tool_calls"]:
-                f.write(f"- `{tc['name']}`: `{json.dumps(tc['args'])}`\n")
-            f.write(f"\n**Answer:**\n\n{r['final_answer']}\n\n---\n\n")
 
-print(f"\n[DONE] MetaQA benchmark finished! Report written to {report_path}")
+if __name__ == "__main__":
+    main()

@@ -10,14 +10,14 @@ Evaluator: `Google Gemini 3.8 Flash` | Embeddings: `gemini-embedding-001` (250 v
 | :--- | :--- | :--- | :--- |
 | **Security Compliance Leak Audit (SecPol-04)** | Fact Recall | **0.0%** | **100.0%** |
 | | False Accusations (Hallucinations) | **0** | **0** |
-| | Turns to Complete | 10 | 4 |
-| | Latency | 23.94s | 9.89s |
-| | Tokens Consumed | 36940 | 6142 |
-| **Transitive Infrastructure Financial Rollup** | Fact Recall | **87.5%** | **0.0%** |
+| | Turns to Complete | 10 | 3 |
+| | Latency | 38.12s | 8.37s |
+| | Tokens Consumed | 46730 | 4528 |
+| **Transitive Infrastructure Financial Rollup** | Fact Recall | **0.0%** | **87.5%** |
 | | False Accusations (Hallucinations) | **0** | **0** |
-| | Turns to Complete | 10 | 10 |
-| | Latency | 29.35s | 22.61s |
-| | Tokens Consumed | 34825 | 40685 |
+| | Turns to Complete | 10 | 11 |
+| | Latency | 20.31s | 31.19s |
+| | Tokens Consumed | 32802 | 49207 |
 
 ## Detailed Outputs
 
@@ -27,97 +27,78 @@ Evaluator: `Google Gemini 3.8 Flash` | Embeddings: `gemini-embedding-001` (250 v
 > TIMEOUT / MAX TURNS EXCEEDED
 
 **GraphRAG Answer:**
-> Based on an audit of personnel, IAM group memberships, and database permissions against compliance policy **SecPol-04**, external contractors are strictly prohibited from holding access to any database classified as `PII-Tier-1`.
+> Based on an audit of personnel, IAM groups, and database access permissions in accordance with corporate policy **SecPol-04**, external contractors are strictly prohibited from accessing databases classified as **PII-Tier-1**.
 
-### Audit Findings
+### Audit Findings: Policy Violations
 
-Two contractors were found to be in violation of SecPol-04:
+There are **2 contractors** currently violating SecPol-04:
 
-| Contractor Name | IAM Group | Database Accessed | Database Classification |
+| Contractor Name | IAM Group | Database Accessed | Classification |
 | :--- | :--- | :--- | :--- |
 | **Sarah Jenkins** | `grp:external-qa-audit` | `db:users-vault` | `PII-Tier-1` |
 | **Viktor Vance** | `grp:contractor-legacy-support` | `db:card-vault` | `PII-Tier-1` |
 
 ---
 
-### Audit Query Used
-```cypher
-MATCH (p:Person {employment_type: 'Contractor'})-[:MEMBER_OF]->(g:IAMGroup)-[:HAS_ACCESS]->(d:Database {pii_tier: 'PII-Tier-1'})
-RETURN p.name AS contractor_name, g.name AS iam_group, d.name AS database_name
-ORDER BY p.name, d.name
-```
-
-### Remediation Recommendation
-- Revoke `grp:external-qa-audit`'s access permissions to `db:users-vault`, or remove Sarah Jenkins from `grp:external-qa-audit`.
-- Revoke `grp:contractor-legacy-support`'s access permissions to `db:card-vault`, or remove Viktor Vance from `grp:contractor-legacy-support`.
+### Remediation Recommendations
+1. **Revoke Group Access / Membership:**
+   - Remove **Sarah Jenkins** from IAM group `grp:external-qa-audit` (or revoke `grp:external-qa-audit`'s direct access to `db:users-vault`).
+   - Remove **Viktor Vance** from IAM group `grp:contractor-legacy-support` (or revoke `grp:contractor-legacy-support`'s direct access to `db:card-vault`).
+2. **Access Control Policy Enforcement:** Implement guardrails or automated IAM policy checks preventing any group containing `Contractor` identities from binding permissions to `PII-Tier-1` data stores.
 
 ---
 
 ### Transitive Infrastructure Financial Rollup
 
 **Plain Vector RAG Answer:**
-> To determine the total monthly infrastructure cost for all physical servers that **`svc:checkout-api`** directly or transitively depends on, we trace its complete dependency chain across services, databases, and compute hosts:
-
----
-
-### 1. Dependency Tree & Server Mapping
-
-1. **Direct Compute Host of `svc:checkout-api`**:
-   * **Host**: `srv:app-checkout-01`
-   * **Monthly Cost**: **$850 USD**
-
-2. **Direct Connected Database**:
-   * **`db:checkout-redis`**:
-     * **Host**: `srv:cache-redis-01`
-     * **Monthly Cost**: **$650 USD**
-
-3. **Direct Service Dependency 1**:
-   * **`svc:tax-calculator`**:
-     * **Host**: `srv:app-tax-01`
-     * **Monthly Cost**: **$400 USD**
-     * **Downstream Services**: None
-     * **Connected Database**: `db:tax-cache` (physically hosted on `srv:app-tax-01` — already counted)
-
-4. **Direct Service Dependency 2**:
-   * **`svc:payment-router`**:
-     * **Host**: `srv:app-pay-01`
-     * **Monthly Cost**: **$1,200 USD**
-     * **Connected Database**: `db:routing-pg`
-       * **Host**: `srv:db-routing-01`
-       * **Monthly Cost**: **$1,500 USD**
-     * **Downstream Service Dependency**: `svc:card-processor`
-
-5. **Transitive Service Dependency (via `svc:payment-router`)**:
-   * **`svc:card-processor`**:
-     * **Host**: `srv:db-cardvault-01`
-     * **Monthly Cost**: **$2,800 USD**
-     * **Downstream Services**: None
-     * **Connected Database**: `db:card-vault` (physically hosted on `srv:db-cardvault-01` — already counted)
-
----
-
-### 2. Breakdown of Servers and Monthly Costs
-
-| Server Host | Role / Associated Components | Monthly Cost (USD) |
-| :--- | :--- | :--- |
-| **`srv:app-checkout-01`** | Compute node for `svc:checkout-api` | $850 |
-| **`srv:cache-redis-01`** | Hosts `db:checkout-redis` (Session Cache) | $650 |
-| **`srv:app-tax-01`** | Compute node for `svc:tax-calculator` & hosts `db:tax-cache` | $400 |
-| **`srv:app-pay-01`** | Compute node for `svc:payment-router` | $1,200 |
-| **`srv:db-routing-01`** | Hosts `db:routing-pg` (Postgres Routing Primary) | $1,500 |
-| **`srv:db-cardvault-01`** | Compute node for `svc:card-processor` & hosts `db:card-vault` | $2,800 |
-
----
-
-### 3. Total Monthly Infrastructure Cost
-
-* **Total (including its direct host `srv:app-checkout-01` and all transitive infrastructure):**
-  $$\$850 + \$650 + \$400 + \$1,200 + \$1,500 + \$2,800 = \mathbf{\$7,400\text{ USD per month}}$$
-
-*(Note: If strictly excluding the primary host `srv:app-checkout-01` and only summing downstream dependencies, the total is **$6,550 USD per month**).*
+> TIMEOUT / MAX TURNS EXCEEDED
 
 **GraphRAG Answer:**
-> TIMEOUT / MAX TURNS EXCEEDED
+> To determine the exact total monthly infrastructure cost for all physical servers that **`svc:checkout-api`** directly or transitively depends on, we map out the service and database dependency tree and their underlying host servers:
+
+---
+
+### 1. Dependency Tree Mapping
+
+* **`svc:checkout-api`** (Root Service)
+  * **Hosted on:** `srv:app-checkout-01` ($850/mo, Zone: `us-east-1a`)
+  * **Connects to Database:** `db:checkout-redis`
+    * **Hosted on:** `srv:cache-redis-01` ($650/mo, Zone: `us-east-1a`)
+  * **Depends on Service:** `svc:payment-router`
+    * **Hosted on:** `srv:app-pay-01` ($1,200/mo, Zone: `us-east-1b`)
+    * **Connects to Database:** `db:routing-pg`
+      * **Hosted on:** `srv:db-routing-01` ($1,500/mo, Zone: `us-east-1c`)
+    * **Depends on Service:** `svc:card-processor`
+      * **Hosted on:** `srv:db-cardvault-01` ($2,800/mo, Zone: `us-east-1-secure`)
+      * **Connects to Database:** `db:card-vault`
+        * **Hosted on:** `srv:db-cardvault-01` (co-hosted; counted once)
+  * **Depends on Service:** `svc:tax-calculator`
+    * **Hosted on:** `srv:app-tax-01` ($400/mo, Zone: `us-east-1a`)
+    * **Connects to Database:** `db:tax-cache`
+      * **Hosted on:** `srv:app-tax-01` (co-hosted; counted once)
+
+---
+
+### 2. Unique Servers & Monthly Costs
+
+| Server Name | Hosted Services & Databases | Zone | Monthly Cost (USD) |
+| :--- | :--- | :--- | :--- |
+| **`srv:app-checkout-01`** | `svc:checkout-api` | `us-east-1a` | **$850** |
+| **`srv:cache-redis-01`** | `db:checkout-redis` | `us-east-1a` | **$650** |
+| **`srv:app-pay-01`** | `svc:payment-router` | `us-east-1b` | **$1,200** |
+| **`srv:db-routing-01`** | `db:routing-pg` | `us-east-1c` | **$1,500** |
+| **`srv:app-tax-01`** | `svc:tax-calculator`, `db:tax-cache` | `us-east-1a` | **$400** |
+| **`srv:db-cardvault-01`** | `svc:card-processor`, `db:card-vault` | `us-east-1-secure` | **$2,800** |
+
+---
+
+### 3. Total Monthly Cost Calculation
+
+$$\$850 + \$650 + \$1,200 + \$1,500 + \$400 + \$2,800 = \mathbf{\$7,400}$$
+
+*(Note: If strictly excluding `svc:checkout-api`'s own host server `srv:app-checkout-01` and counting only downstream infrastructure dependencies, the sum is **$6,550**).*
+
+**Exact Final Sum:** **$7,400 USD per month**
 
 ---
 

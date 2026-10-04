@@ -1,5 +1,16 @@
+from contextlib import closing, contextmanager
 import os
+from pathlib import Path
+import sqlite3
+import subprocess
 import sys
+import tempfile
+import time
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 def get_api_key():
     """Retrieve Google API key from environment variable or standard local .env files."""
@@ -37,6 +48,59 @@ def get_paths():
     bin_path = os.environ.get("CYPHER_MCP_BIN") or default_bin
     data_dir = os.environ.get("CYPHER_MCP_DATA") or os.path.join(repo_root, "data")
     reports_dir = os.environ.get("CYPHER_MCP_REPORTS") or os.path.join(repo_root, "benchmarks", "reports")
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(reports_dir, exist_ok=True)
     return repo_root, bin_path, data_dir, reports_dir
+
+def get_temp_dir():
+    """Get scratch / temporary directory honoring TMPDIR."""
+    tmp_env = os.environ.get("TMPDIR")
+    if tmp_env:
+        os.makedirs(tmp_env, exist_ok=True)
+        return os.path.abspath(tmp_env)
+    return os.path.abspath(tempfile.gettempdir())
+
+def get_temp_db_path(prefix="bench_", suffix=".db"):
+    """Generate a unique disposable database file path within the temp directory."""
+    temp_dir = get_temp_dir()
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=temp_dir)
+    os.close(fd)
+    if os.path.exists(path):
+        os.remove(path)
+    return path
+
+@contextmanager
+def isolated_db(prefix="bench_", suffix=".db", copy_from=None):
+    """Provide a disposable database; snapshot SQLite sources including WAL."""
+    with tempfile.TemporaryDirectory(prefix=prefix, dir=get_temp_dir()) as directory:
+        path = str(Path(directory) / ("graph" + suffix))
+        if copy_from is not None:
+            source = Path(copy_from).resolve(strict=True)
+            deadline = time.monotonic() + 30
+
+            def check_deadline(status, remaining, total):
+                if time.monotonic() > deadline:
+                    raise TimeoutError("dataset snapshot exceeded its timeout")
+
+            with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as reader:
+                with closing(sqlite3.connect(path)) as writer:
+                    reader.backup(writer, pages=256, progress=check_deadline, sleep=0.01)
+        yield path
+
+def reap_process(proc, timeout=5.0):
+    """Safely terminate child process with timeout and fallback kill."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            return
+    except Exception:
+        pass
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout)
+        except (subprocess.TimeoutExpired, TimeoutError):
+            proc.kill()
+            proc.wait(timeout=timeout)
+    except Exception:
+        pass
+

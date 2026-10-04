@@ -11,9 +11,9 @@ Evaluation comparing **GraphRAG (`cypher-mcp`)** vs. **Plain Vector RAG** across
 
 | Depth / Hops | Plain Vector RAG Recall | GraphRAG Recall | Latency Ratio | Winner |
 | :--- | :--- | :--- | :--- | :--- |
-| **1-Hop Dependency** | 100.0% (2 turns, 713 tokens) | **100.0%** (5 turns, 3600 tokens) | 0.6x | **TIE** |
-| **2-Hop Branching** | 100.0% (3 turns, 1995 tokens) | **100.0%** (6 turns, 10012 tokens) | 0.2x | **TIE** |
-| **3-Hop Branching** | 100.0% (4 turns, 2754 tokens) | **100.0%** (4 turns, 7132 tokens) | 1.1x | **TIE** |
-| **4-Hop Transitive Attribute Extraction** | 0.0% (8 turns, 9377 tokens) | **100.0%** (7 turns, 9010 tokens) | 1.0x | **GraphRAG** |
+| **1-Hop Dependency** | 100.0% (3 turns, 1659 tokens) | **100.0%** (5 turns, 3702 tokens) | 0.9x | **TIE** |
+| **2-Hop Branching** | 100.0% (3 turns, 2018 tokens) | **100.0%** (4 turns, 5828 tokens) | 1.0x | **TIE** |
+| **3-Hop Branching** | 100.0% (6 turns, 5220 tokens) | **100.0%** (4 turns, 6116 tokens) | 1.3x | **TIE** |
+| **4-Hop Transitive Attribute Extraction** | 0.0% (8 turns, 9646 tokens) | **100.0%** (7 turns, 10767 tokens) | 1.6x | **GraphRAG** |
 
 ---
