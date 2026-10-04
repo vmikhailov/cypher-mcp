@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -324,8 +325,10 @@ def run_graph_rag(task, max_turns=10):
         stderr=subprocess.PIPE,
         text=True
     )
+    assert proc.stdin is not None and proc.stdout is not None
     try:
         def rpc(q):
+            assert proc.stdin is not None and proc.stdout is not None
             req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "graph_query", "arguments": {"query": q}}}
             proc.stdin.write(json.dumps(req) + "\n")
             proc.stdin.flush()
@@ -428,6 +431,7 @@ def evaluate_task(task, res):
         found = [c for c in expected if (c.lower() in text.lower() or c.split(".")[0].lower() in text.lower()) and not is_negated(text, c.lower())]
         recall = (len(found) / len(expected)) * 100.0
         return {"recall": recall, "found_count": len(found), "expected_count": len(expected)}
+    return {"recall": 0.0, "found_count": 0, "expected_count": 0}
 
 def _evaluate():
     print("=" * 70)

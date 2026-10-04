@@ -1,19 +1,6 @@
 """Safety tests for dataset preparation; all databases are disposable fixtures."""
 
-from contextlib import closing, redirect_stdout
-try:
-    from contextlib import chdir
-except ImportError:
-    from contextlib import contextmanager
-
-    @contextmanager
-    def chdir(path):
-        prev = os.getcwd()
-        os.chdir(path)
-        try:
-            yield
-        finally:
-            os.chdir(prev)
+from contextlib import closing, contextmanager, redirect_stdout
 import importlib.util
 import inspect
 import io
@@ -26,8 +13,19 @@ import unittest
 from unittest import mock
 
 
+@contextmanager
+def chdir(path):
+    prev = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(prev)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("dataset_index_metaqa", ROOT / "scripts" / "index_metaqa.py")
+assert SPEC is not None and SPEC.loader is not None
 index = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(index)
 
@@ -117,6 +115,7 @@ class DatasetSetupTests(unittest.TestCase):
 
     def test_setup_datasets_passes_overwrite_flag(self):
         spec = importlib.util.spec_from_file_location("dataset_setup_datasets", ROOT / "scripts" / "setup_datasets.py")
+        assert spec is not None and spec.loader is not None
         setup_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(setup_mod)
 
@@ -149,6 +148,7 @@ class DatasetSetupTests(unittest.TestCase):
                         sys.modules.pop(k, None)
                 with mock.patch.object(index.urllib.request, "urlopen", side_effect=AssertionError("import should not access network")):
                     spec = importlib.util.spec_from_file_location("dataset_setup_datasets", ROOT / "scripts" / "setup_datasets.py")
+                    assert spec is not None and spec.loader is not None
                     setup_mod = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(setup_mod)
         self.assertTrue(hasattr(setup_mod, "setup_all"))

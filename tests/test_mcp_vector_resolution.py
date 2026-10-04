@@ -29,6 +29,7 @@ def main():
                 stderr=subprocess.PIPE,
                 text=True
             )
+            assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
 
             req_counter = 0
 
@@ -41,6 +42,7 @@ def main():
                     "method": method,
                     "params": params
                 }
+                assert proc and proc.stdin and proc.stdout and proc.stderr
                 proc.stdin.write(json.dumps(req) + "\n")
                 proc.stdin.flush()
                 line = proc.stdout.readline()

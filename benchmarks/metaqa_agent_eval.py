@@ -37,6 +37,7 @@ GEMINI_URL = ""
 
 def rpc_mcp(method, params, req_id=1):
     req = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
+    assert mcp_proc and mcp_proc.stdin and mcp_proc.stdout
     mcp_proc.stdin.write(json.dumps(req) + "\n")
     mcp_proc.stdin.flush()
     line = mcp_proc.stdout.readline()
@@ -57,6 +58,7 @@ def tool_graph_query(query_str):
 
 def tool_search_facts(query_str, limit=15):
     try:
+        assert cur_fts is not None
         # Clean query for FTS5
         clean_q = " ".join([f'"{w}"' for w in query_str.replace("'", "").replace('"', '').split() if len(w) > 1])
         if not clean_q:

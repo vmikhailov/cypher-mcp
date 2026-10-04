@@ -25,9 +25,9 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(__file__))
 
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    getattr(sys.stdout, "reconfigure")(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8")
+    getattr(sys.stderr, "reconfigure")(encoding="utf-8")
 
 from common import get_api_key, get_paths, isolated_db, reap_process
 
@@ -56,6 +56,7 @@ def rpc_mcp(method, params):
     global req_id_counter
     req_id_counter += 1
     req = {"jsonrpc": "2.0", "id": req_id_counter, "method": method, "params": params}
+    assert mcp_proc and mcp_proc.stdin and mcp_proc.stdout
     mcp_proc.stdin.write(json.dumps(req) + "\n")
     mcp_proc.stdin.flush()
     line = mcp_proc.stdout.readline()

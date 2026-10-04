@@ -11,17 +11,12 @@ Embedding: Google Gemini Embedding 001 (batchEmbedContents)
 """
 
 import os
-
 import sys
-
 import time
-
 import json
-
 import math
-
 import random
-
+import re
 import subprocess
 
 import urllib.request
@@ -86,6 +81,7 @@ def rpc_mcp(method, params):
     global req_id_counter
     req_id_counter += 1
     req = {"jsonrpc": "2.0", "id": req_id_counter, "method": method, "params": params}
+    assert mcp_proc and mcp_proc.stdin and mcp_proc.stdout
     mcp_proc.stdin.write(json.dumps(req) + "\n")
     mcp_proc.stdin.flush()
     line = mcp_proc.stdout.readline()

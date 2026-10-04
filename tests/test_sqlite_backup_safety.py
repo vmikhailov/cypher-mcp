@@ -12,6 +12,7 @@ class SQLiteBackupSafetyTests(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / "scripts" / "backup_sqlite.py"
         self.assertTrue(script.is_file(), "consistent backup/restore command is missing")
         spec = importlib.util.spec_from_file_location("backup_sqlite", script)
+        assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module.backup_database

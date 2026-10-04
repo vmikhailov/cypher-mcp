@@ -10,17 +10,12 @@ Evaluates:
 """
 
 import os
-
 import sys
-
 import json
-
+import re
 import time
-
 import subprocess
-
 import urllib.request
-
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -33,6 +28,7 @@ DOCS = []
 
 def mcp_call(method, params, req_id=1):
     req = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
+    assert mcp_proc and mcp_proc.stdin and mcp_proc.stdout
     mcp_proc.stdin.write(json.dumps(req) + "\n")
     mcp_proc.stdin.flush()
     line = mcp_proc.stdout.readline()

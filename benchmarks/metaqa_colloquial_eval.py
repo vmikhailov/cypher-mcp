@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import json
+import re
 import sqlite3
 import subprocess
 import urllib.request
@@ -72,6 +73,7 @@ def rpc_mcp(method, params):
     global req_id_counter
     req_id_counter += 1
     req = {"jsonrpc": "2.0", "id": req_id_counter, "method": method, "params": params}
+    assert mcp_proc and mcp_proc.stdin and mcp_proc.stdout
     mcp_proc.stdin.write(json.dumps(req) + "\n")
     mcp_proc.stdin.flush()
     line = mcp_proc.stdout.readline()
@@ -79,6 +81,7 @@ def rpc_mcp(method, params):
 
 def tool_search_facts(query_str, limit=15):
     try:
+        assert cur_fts is not None
         clean_q = " ".join([f'"{w}"' for w in query_str.replace("'", "").replace('"', '').split() if len(w) > 1])
         if clean_q:
             cur_fts.execute(f"SELECT fact FROM facts_fts WHERE facts_fts MATCH ? LIMIT ?", (clean_q, limit))

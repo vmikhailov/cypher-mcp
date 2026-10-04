@@ -8,9 +8,9 @@ import tempfile
 import time
 
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    getattr(sys.stdout, "reconfigure")(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8")
+    getattr(sys.stderr, "reconfigure")(encoding="utf-8")
 
 def get_api_key():
     """Retrieve Google API key from environment variable or standard local .env files."""
