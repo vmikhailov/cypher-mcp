@@ -32,6 +32,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from common import get_api_key, get_paths, isolated_db, reap_process
 
+EMBED_URL = ""
+BATCH_EMBED_URL = ""
+CACHE_FILE = ""
+GEMINI_URL = ""
+mcp_proc = None
+req_id_counter = 0
+all_vectors = None
+raw_documents = []
+
 def get_single_embedding(text):
     payload = {"model": "models/gemini-embedding-001", "content": {"parts": [{"text": text[:2000]}]}}
     data = json.dumps(payload).encode("utf-8")
@@ -151,7 +160,7 @@ def run_agent_loop(paradigm, prompt, system_instruction, tools_decl, dispatcher,
 
 def main():
     """Run explicitly; importing this module performs no benchmark work."""
-    global AUDIT_TASKS, BATCH_EMBED_URL, BIN_PATH, CACHE_FILE, DATA_DIR, DB_PATH, EMBED_URL, GEMINI_URL, GRAPH_SYS, GRAPH_TOOLS, PLAIN_SYS, PLAIN_TOOLS, REPORTS_DIR, REPORT_PATH, REPO_ROOT, acc, acc_str, alias, all_vectors, api_key, c_id, checkout_servers, conn_db, conn_dbs, contractors, cost, databases, db, db_id, db_text, dep_svc, dep_svcs, dep_text, dept, desc, ds, edges, f, g, g_found, g_hallu, g_id, g_recall, g_res, granted_targets, grp, grp_str, grps, gt, h, h_srv, host_srv, i, iam_groups, key_aliases, mcp_proc, name, nid, nodes, p_found, p_hallu, p_id, p_recall, p_res, p_type, personnel, r, raw_documents, req_id_counter, results, role_desc, s_id, servers, services, staff, task, tier, zone
+    global EMBED_URL, BATCH_EMBED_URL, CACHE_FILE, GEMINI_URL, mcp_proc, req_id_counter, all_vectors, raw_documents
     REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
     CACHE_FILE = os.path.join(DATA_DIR, "audit_vectors.json")

@@ -30,6 +30,10 @@ from common import get_api_key, get_paths, reap_process
 
 from index_metaqa import ensure_metaqa
 
+mcp_proc = None
+cur_fts = None
+GEMINI_URL = ""
+
 def rpc_mcp(method, params, req_id=1):
     req = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
     mcp_proc.stdin.write(json.dumps(req) + "\n")
@@ -191,7 +195,7 @@ def run_metaqa_agent(agent_type, question_text):
 
 def main():
     """Run explicitly; importing this module performs no benchmark work."""
-    global AGENTS, BIN_PATH, DATA_DIR, DB_PATH, GEMINI_URL, REPORTS_DIR, REPO_ROOT, TASKS, ag, ans_lower, api_key, avg_lat, avg_rec, avg_toks, avg_turns, con_fts, cur_fts, f, k, matched, mcp_proc, r, report_path, res, results, score, t, t_id, task, tc
+    global GEMINI_URL, mcp_proc, cur_fts
     REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
     DB_PATH = os.path.join(DATA_DIR, "metaqa.db")

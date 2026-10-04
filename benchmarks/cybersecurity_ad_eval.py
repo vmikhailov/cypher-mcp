@@ -12,6 +12,21 @@ sys.path.insert(0, os.path.dirname(__file__))
 from common import get_api_key, get_paths, isolated_db, reap_process
 
 AD_RAW_URL = "https://raw.githubusercontent.com/neo4j-graph-examples/cybersecurity/main/data/cybersecurity-json-data.json"
+API_KEY = ""
+BIN_PATH = ""
+DATA_DIR = ""
+DB_PATH = ""
+RAW_PATH = ""
+VEC_CACHE = ""
+REPORTS_DIR = ""
+REPO_ROOT = ""
+GEMINI_MODEL = "gemini-3.8-flash"
+EMBED_MODEL = "models/gemini-embedding-001"
+GRAPH_TOOLS = []
+RAG_TOOLS = []
+AD_TASKS = []
+mcp_proc = None
+req_id_counter = 0
 
 def ensure_ad_dataset(raw_path=None, db_path=None):
     if raw_path is None or db_path is None:
@@ -440,7 +455,7 @@ def _evaluate():
 
 def main():
     """Run explicitly; importing this module performs no benchmark work."""
-    global AD_RAW_URL, AD_TASKS, API_KEY, BIN_PATH, DATA_DIR, DB_PATH, EMBED_MODEL, GEMINI_MODEL, GRAPH_TOOLS, RAG_TOOLS, RAW_PATH, REPORTS_DIR, REPO_ROOT, VEC_CACHE
+    global AD_RAW_URL, AD_TASKS, API_KEY, BIN_PATH, DATA_DIR, DB_PATH, EMBED_MODEL, GEMINI_MODEL, GRAPH_TOOLS, RAG_TOOLS, RAW_PATH, REPORTS_DIR, REPO_ROOT, VEC_CACHE, mcp_proc, req_id_counter
     REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
     DB_PATH = os.path.join(DATA_DIR, "cybersecurity_ad.db")

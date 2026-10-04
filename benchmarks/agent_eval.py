@@ -27,6 +27,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from common import get_api_key, get_paths, isolated_db, reap_process
 
+mcp_proc = None
+GEMINI_URL = ""
+DOCS = []
+
 def mcp_call(method, params, req_id=1):
     req = {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
     mcp_proc.stdin.write(json.dumps(req) + "\n")
@@ -202,7 +206,7 @@ def run_agent_session(mode, task_prompt):
 
 def main():
     """Run explicitly; importing this module performs no benchmark work."""
-    global BIN_PATH, DATA_DIR, DOCS, EVAL_TASKS, GEMINI_URL, GRAPH_EDGES, GRAPH_NODES, REPORTS_DIR, REPO_ROOT, api_key, c, c_ans, c_status, cypher_ok, cypher_res, db_path, f, has_neg, has_pos, k, mcp_proc, num, r, r_ans, r_status, rag_ok, rag_res, report_path, results, rg, task, tc, tot_c_ok, tot_c_tokens, tot_c_turns, tot_r_ok, tot_r_tokens, tot_r_turns
+    global DOCS, GEMINI_URL, mcp_proc
     REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
     api_key = get_api_key()

@@ -33,6 +33,12 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from common import get_api_key, get_paths, isolated_db, reap_process
 
+EMBED_URL = ""
+GEMINI_URL = ""
+mcp_proc = None
+req_id_counter = 0
+doc_vectors = []
+
 def get_embedding(text):
     payload = {
         "model": "models/gemini-embedding-001",
@@ -154,7 +160,7 @@ def run_agent_loop(paradigm_name, prompt, system_instruction, tools_decl, tool_d
 
 def main():
     """Run explicitly; importing this module performs no benchmark work."""
-    global BENCHMARK_TASKS, BIN_PATH, DATA_DIR, DB_PATH, EMBED_URL, GEMINI_URL, GRAPH_RAG_TOOLS, PLAIN_RAG_TOOLS, REPORTS_DIR, REPORT_PATH, REPO_ROOT, alias, aliases, api_key, c, chunk, corpus, doc_vectors, edges, f, g_acc, g_avg_lat, g_avg_tok, g_avg_turns, g_correct, graph_res, graph_sys, hf_url, i, item, last_brace, mcp_proc, node_id, nodes, p_acc, p_avg_lat, p_avg_tok, p_avg_turns, p_correct, plain_res, plain_sys, r, raw_data, raw_tasks, req, req_id_counter, resp, results, selected_indices, sentences, task, text, title, unique_corpus, vec
+    global EMBED_URL, GEMINI_URL, mcp_proc, req_id_counter, doc_vectors
     REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
     DB_PATH = os.path.join(DATA_DIR, "2wiki_benchmark.db")

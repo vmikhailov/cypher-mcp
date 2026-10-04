@@ -23,6 +23,50 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 from common import get_api_key, get_paths, isolated_db, reap_process
 from index_metaqa import ensure_metaqa
 
+mcp_proc = None
+req_id_counter = 0
+cur_fts = None
+GEMINI_URL = ""
+
+MCP_TOOLS = [
+    {
+        "name": "graph_resolve_entity",
+        "description": "Resolve colloquial names, nicknames, foreign language translations, or typos to canonical node IDs in MetaQA using vector similarity.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {"type": "STRING", "description": "Entity name or phrase"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "graph_query",
+        "description": "Execute OpenCypher queries against MetaQA (43k nodes, 117k edges). Edge types: directed_by, starred_actors, in_language, has_genre, writer.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {"type": "STRING", "description": "OpenCypher query"}
+            },
+            "required": ["query"]
+        }
+    }
+]
+
+TEXT_TOOLS = [
+    {
+        "name": "search_facts",
+        "description": "Full-text search over 134,741 movie facts (triples: subject | relation | object).",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {"type": "STRING", "description": "Search query keywords"}
+            },
+            "required": ["query"]
+        }
+    }
+]
+
 def rpc_mcp(method, params):
     global req_id_counter
     req_id_counter += 1
@@ -145,7 +189,7 @@ def run_agent(agent_type, question_text, max_steps=8):
 
 def main():
     """Run explicitly; importing this module performs no benchmark work."""
-    global BIN_PATH, DATA_DIR, DB_PATH, GEMINI_URL, MCP_TOOLS, REPORTS_DIR, REPORT_PATH, REPO_ROOT, TASKS, TEXT_TOOLS, alias, aliases_to_index, api_key, avg_mcp_recall, avg_txt_recall, con_fts, cur_fts, f, k, m_matched, m_recall, mcp_proc, mcp_res, node_id, r, req_id_counter, results, t_matched, t_recall, task, txt_res, winner
+    global GEMINI_URL, mcp_proc, cur_fts, req_id_counter
     REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
     api_key = get_api_key()

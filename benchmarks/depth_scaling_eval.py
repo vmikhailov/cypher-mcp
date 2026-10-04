@@ -25,6 +25,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from common import get_api_key, get_paths, isolated_db, reap_process
 
+EMBED_URL = ""
+GEMINI_URL = ""
+mcp_proc = None
+req_id_counter = 0
+doc_vectors = []
+
 def get_embedding(text):
     payload = {"model": "models/gemini-embedding-001", "content": {"parts": [{"text": text}]}}
     data = json.dumps(payload).encode("utf-8")
@@ -100,7 +106,7 @@ def run_test(paradigm, prompt, tools_decl, dispatcher, max_turns=8):
 
 def main():
     """Run explicitly; importing this module performs no benchmark work."""
-    global BIN_PATH, DATA_DIR, DB_PATH, EMBED_URL, GEMINI_URL, GRAPH_TOOLS, PLAIN_TOOLS, REPORTS_DIR, REPORT_PATH, REPO_ROOT, TESTS, api_key, c1, c2, compliance_codes, doc, doc_vectors, e, edges, f, g_matched, g_rec, g_res, i, lat_ratio, mcp_proc, name, nid, nodes, p_id, p_matched, p_rec, p_res, r, raw_docs, req_id_counter, results, t, tag, v, winner
+    global EMBED_URL, GEMINI_URL, mcp_proc, req_id_counter, doc_vectors
     REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
     DB_PATH = os.path.join(DATA_DIR, "depth_scaling.db")

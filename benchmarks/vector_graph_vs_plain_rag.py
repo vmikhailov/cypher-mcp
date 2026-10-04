@@ -30,6 +30,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from common import get_api_key, get_paths, isolated_db, reap_process
 
+EMBED_URL = ""
+GEMINI_URL = ""
+mcp_proc = None
+req_id_counter = 0
+doc_vectors = []
+
 def get_embedding(text):
     payload = {
         "model": "models/gemini-embedding-001",
@@ -170,7 +176,7 @@ def run_agent_loop(paradigm_name, prompt, system_instruction, tools_decl, tool_d
 
 def main():
     """Run explicitly; importing this module performs no benchmark work."""
-    global BIN_PATH, DATA_DIR, DB_PATH, DOCS, EMBED_URL, GEMINI_URL, GRAPH_RAG_TOOLS, PLAIN_RAG_TOOLS, REPORTS_DIR, REPORT_PATH, REPO_ROOT, TASKS, alias, aliases, api_key, avg_g_lat, avg_g_rec, avg_g_tok, avg_g_turns, avg_p_lat, avg_p_rec, avg_p_tok, avg_p_turns, doc, doc_vectors, edges, f, found, g_found, g_miss, graph_recall, graph_res, graph_sys, mcp_proc, node_id, nodes, p_found, p_miss, plain_recall, plain_res, plain_sys, r, req_id_counter, results, task, vec
+    global EMBED_URL, GEMINI_URL, mcp_proc, req_id_counter, doc_vectors
     REPO_ROOT, BIN_PATH, DATA_DIR, REPORTS_DIR = get_paths()
 
     DB_PATH = os.path.join(DATA_DIR, "benchmark_rag_vs_graph.db")
