@@ -1,7 +1,5 @@
 """Offline safety checks for consistent SQLite backups, including WAL."""
 from contextlib import closing
-import importlib.util
-import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -12,16 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from scripts.backup_sqlite import backup_database
+
 
 class SQLiteBackupSafetyTests(unittest.TestCase):
     def backup_function(self):
-        script = Path(__file__).resolve().parents[1] / "scripts" / "backup_sqlite.py"
+        script = ROOT / "scripts" / "backup_sqlite.py"
         self.assertTrue(script.is_file(), "consistent backup/restore command is missing")
-        spec = importlib.util.spec_from_file_location("backup_sqlite", script)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.backup_database
+        return backup_database
 
     def test_backup_and_restore_include_committed_wal_data(self):
         backup = self.backup_function()

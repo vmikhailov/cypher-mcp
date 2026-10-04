@@ -15,7 +15,8 @@ import struct
 import sqlite3
 import urllib.request
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "benchmarks")))
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from common import get_api_key, get_paths, isolated_db
 
 def get_embedding(text, embed_url):

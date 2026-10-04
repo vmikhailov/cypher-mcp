@@ -1,6 +1,6 @@
 """Safety tests for dataset preparation; all databases are disposable fixtures."""
 
-from contextlib import closing, contextmanager, redirect_stdout
+from contextlib import closing, contextmanager
 import importlib.util
 import inspect
 import io
@@ -27,10 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "benchmarks"))
 sys.path.insert(0, str(ROOT / "scripts"))
-SPEC = importlib.util.spec_from_file_location("dataset_index_metaqa", ROOT / "scripts" / "index_metaqa.py")
-assert SPEC is not None and SPEC.loader is not None
-index = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(index)
+
+from scripts import index_metaqa as index
 
 KB = b"Example Film|directed_by|Example Director\nExample Film|release_year|2001\n"
 

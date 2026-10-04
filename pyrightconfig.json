@@ -1,14 +1,12 @@
 {
   "include": [
     "benchmarks",
-    "scripts",
-    "tests"
+    "scripts"
   ],
   "extraPaths": [
     ".",
     "benchmarks",
-    "scripts",
-    "tests"
+    "scripts"
   ],
   "pythonVersion": "3.10",
   "typeCheckingMode": "basic"

@@ -2841,11 +2841,18 @@ func executeToolCall(db, dbRO *sql.DB, toolName string, arguments map[string]any
 // ── Server Bootstrap & Event Loop ──────────────────────────────────────────
 
 func main() {
-	dbPath := flag.String("db", "knowledge_graph.db", "Path to SQLite database file")
+	if shouldRunCLI(os.Args[1:]) {
+		os.Exit(runCLI(os.Args[1:]))
+	}
+
+	defaultDB := resolveDBPath("knowledge_graph.db")
+	dbPath := flag.String("db", defaultDB, "Path to SQLite database file")
 	logPath := flag.String("log", "", "Path to debug log file")
 	strictSchema := flag.Bool("strict-schema", false, "Strictly enforce schema even if schema tables are empty")
 	maxRows := flag.Int("max-rows", 1000, "Maximum number of rows returned by graph_query (0 = unlimited)")
 	flag.Parse()
+
+	targetDB := resolveDBPath(*dbPath)
 
 	if *maxRows >= 0 {
 		defaultMaxRows = *maxRows
@@ -2866,16 +2873,16 @@ func main() {
 		}
 	}
 
-	logMsg("Starting cypher-mcp with db=%s, strict-schema=%v", *dbPath, *strictSchema)
+	logMsg("Starting cypher-mcp with db=%s, strict-schema=%v", targetDB, *strictSchema)
 
-	db, err := initDatabase(*dbPath)
+	db, err := initDatabase(targetDB)
 	if err != nil {
 		logMsg("Database init failed: %v", err)
 		log.Fatalf("database init failed: %v", err)
 	}
 	defer db.Close()
 
-	dbRO, err := initRODatabase(*dbPath)
+	dbRO, err := initRODatabase(targetDB)
 	if err != nil {
 		logMsg("RO Database init failed: %v", err)
 		log.Fatalf("ro database init failed: %v", err)

@@ -3,7 +3,7 @@
 all: check build
 
 build:
-	go build -ldflags="-s -w" -o bin/cypher-mcp .
+	go build -ldflags="-s -w" -o bin/cypher-mcp ./cmd/cypher-mcp
 
 test:
 	go test -v -cover ./...

@@ -5,12 +5,10 @@ import importlib.util
 import io
 import os
 from pathlib import Path
-import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest import mock
 
@@ -31,8 +29,8 @@ ALL_13_MODULES = [
     ROOT / "benchmarks" / "vector_graph_vs_plain_rag.py",
     ROOT / "scripts" / "index_metaqa.py",
     ROOT / "scripts" / "setup_datasets.py",
-    ROOT / "tests" / "test_mcp_vector_resolution.py",
-    ROOT / "tests" / "test_vector_entity_linking.py",
+    ROOT / "benchmarks" / "test_mcp_vector_resolution.py",
+    ROOT / "benchmarks" / "test_vector_entity_linking.py",
 ]
 
 

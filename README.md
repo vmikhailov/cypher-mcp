@@ -4,7 +4,7 @@
 [![CI](https://github.com/vmikhailov/cypher-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/vmikhailov/cypher-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A **Zero-CGO Model Context Protocol (MCP)** server that equips AI agents with an embedded SQLite Knowledge Graph
+A **Zero-CGO Model Context Protocol (MCP)** server and **standalone CLI tool** that equips AI agents and developers with an embedded SQLite Knowledge Graph
 queried via declarative **OpenCypher** without a separate database server.
 
 Powered by [`cypher-sql-go`](https://github.com/vmikhailov/cypher-sql-go) and pure-Go SQLite (`modernc.org/sqlite`).
@@ -136,6 +136,99 @@ mcp_servers:
 
 ---
 
+## Command-Line Interface (CLI)
+
+`cypher-mcp` is a dual-mode executable. When invoked without arguments (or with `--db`/`--log` on a pipe), it operates as a standard JSON-RPC 2.0 MCP server over stdio. When invoked with any CLI subcommand, it acts as a high-performance terminal CLI tool for developers, scripts, and shell pipelines.
+
+### Subcommands Overview
+
+| Command | Alias | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `query` | `q` | Run OpenCypher queries against the SQLite graph | `cypher-mcp query "MATCH (n) RETURN n LIMIT 5"` |
+| `search` | `s` | Full-text FTS5 search across nodes and properties | `cypher-mcp search "database"` |
+| `resolve`| `r` | Semantic vector entity resolution / linking | `cypher-mcp resolve "alice"` |
+| `node`   | -   | Inspect, create, update, or delete nodes | `cypher-mcp node get alice` |
+| `edge`   | -   | Create or update directed relationships | `cypher-mcp edge set alice proj1 CONTRIBUTES` |
+| `schema` | -   | View topology volume and enforce schema rules | `cypher-mcp schema show` |
+| `alias`  | -   | Register semantic aliases for entity linking | `cypher-mcp alias upsert alice "Al"` |
+| `batch`  | -   | Import batches of nodes and edges atomically | `cypher-mcp batch import graph.json` |
+| `serve`  | -   | Explicitly run as an MCP server | `cypher-mcp serve --db graph.db` |
+| `version`| -   | Print version and architecture info | `cypher-mcp version` |
+
+### Querying the Graph
+
+By default, queries render formatted ASCII tables on interactive terminals and JSON when piped into another program or when `--format json` is passed:
+
+```bash
+# Pretty-printed table output
+cypher-mcp query "MATCH (p:Person)-[:WORKS_ON]->(prj) RETURN p.name, prj.name"
+
+# Parameterized query with JSON output
+cypher-mcp query --params '{"minAge": 21}' --format json \
+  "MATCH (p:Person) WHERE p.age >= $minAge RETURN p.name, p.age"
+
+# Pipe Cypher queries via stdin
+echo "MATCH (n) RETURN count(n) AS total_nodes" | cypher-mcp query -
+```
+
+### Full-Text Search & Entity Resolution
+
+```bash
+# Full-text search across IDs and all JSON property attributes
+cypher-mcp search "kubernetes" --limit 10
+
+# Semantic vector entity linking (uses GEMINI_API_KEY when configured)
+cypher-mcp resolve "k8s cluster" --top-k 3
+```
+
+### Direct Node and Edge Manipulation
+
+```bash
+# Create or update a node (kind, properties)
+cypher-mcp node set alice Person '{"name":"Alice","role":"Architect"}'
+
+# Read node
+cypher-mcp node get alice
+
+# Create a directed relationship
+cypher-mcp edge set alice proj1 CONTRIBUTES '{"since": 2024}'
+
+# Delete node and cascade-clean its relationships
+cypher-mcp node delete alice
+```
+
+### Schema Governance
+
+```bash
+# Display node/edge volumes, distinct kinds, and enforcement status
+cypher-mcp schema show
+
+# Define strict taxonomy rules (whitelist allowed node kinds and relations)
+cypher-mcp schema define \
+  --node-kinds "Person,Project,Document" \
+  --relations "CONTRIBUTES:Person:Project,REFERENCES:Document:Project"
+```
+
+### Batch Ingestion
+
+Import graph data atomically in a single ACID transaction from a file or stdin:
+
+```bash
+cat << 'EOF' | cypher-mcp batch import -
+{
+  "nodes": [
+    {"id": "bob", "kind": "Person", "properties": {"name": "Bob"}},
+    {"id": "api", "kind": "Service", "properties": {"tier": "backend"}}
+  ],
+  "edges": [
+    {"from_id": "bob", "to_id": "api", "kind": "MAINTAINS"}
+  ]
+}
+EOF
+```
+
+---
+
 ## Relational Schema
 
 `cypher-mcp` automatically initializes the following universal graph schema if the database does not exist:
@@ -214,7 +307,7 @@ Requires Go 1.22+:
 ```bash
 git clone https://github.com/vmikhailov/cypher-mcp.git
 cd cypher-mcp
-go build -ldflags="-s -w" -o bin/cypher-mcp .
+go build -ldflags="-s -w" -o bin/cypher-mcp ./cmd/cypher-mcp
 ```
 
 To run tests:

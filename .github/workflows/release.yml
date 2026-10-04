@@ -81,15 +81,15 @@ jobs:
         run: |
           mkdir -p dist
           # Linux AMD64
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cypher-mcp-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cypher-mcp-linux-amd64 ./cmd/cypher-mcp
           # Linux ARM64
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/cypher-mcp-linux-arm64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/cypher-mcp-linux-arm64 ./cmd/cypher-mcp
           # macOS AMD64 (Intel)
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/cypher-mcp-darwin-amd64 .
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/cypher-mcp-darwin-amd64 ./cmd/cypher-mcp
           # macOS ARM64 (Apple Silicon)
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/cypher-mcp-darwin-arm64 .
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/cypher-mcp-darwin-arm64 ./cmd/cypher-mcp
           # Windows AMD64
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/cypher-mcp-windows-amd64.exe .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/cypher-mcp-windows-amd64.exe ./cmd/cypher-mcp
 
       - name: Scan Built Linux Binary for Vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -mode=binary dist/cypher-mcp-linux-amd64
