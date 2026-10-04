@@ -26,8 +26,6 @@ import subprocess
 
 import urllib.request
 
-import urllib.error
-
 sys.path.insert(0, os.path.dirname(__file__))
 
 from common import get_api_key, get_paths, isolated_db, reap_process

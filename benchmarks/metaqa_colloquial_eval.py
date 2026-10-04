@@ -15,7 +15,6 @@ import json
 import sqlite3
 import subprocess
 import urllib.request
-import urllib.error
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -241,45 +240,6 @@ def main():
             con_fts = sqlite3.connect(DB_PATH)
 
             cur_fts = con_fts.cursor()
-
-            MCP_TOOLS = [
-                {
-                    "name": "graph_resolve_entity",
-                    "description": "Resolve colloquial names, nicknames, foreign language translations, or typos to canonical node IDs in MetaQA using vector similarity.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "query": {"type": "STRING", "description": "Entity name or phrase"}
-                        },
-                        "required": ["query"]
-                    }
-                },
-                {
-                    "name": "graph_query",
-                    "description": "Execute OpenCypher queries against MetaQA (43k nodes, 117k edges). Edge types: directed_by, starred_actors, in_language, has_genre, writer.",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "query": {"type": "STRING", "description": "OpenCypher query"}
-                        },
-                        "required": ["query"]
-                    }
-                }
-            ]
-
-            TEXT_TOOLS = [
-                {
-                    "name": "search_facts",
-                    "description": "Full-text search over 134,741 movie facts (triples: subject | relation | object).",
-                    "parameters": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "query": {"type": "STRING", "description": "Search query keywords"}
-                        },
-                        "required": ["query"]
-                    }
-                }
-            ]
 
             TASKS = [
                 {
