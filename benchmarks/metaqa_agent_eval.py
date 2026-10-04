@@ -26,7 +26,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from common import get_api_key, get_paths, reap_process
 
-from index_metaqa import ensure_metaqa
+try:
+    from scripts.index_metaqa import ensure_metaqa
+except ImportError:
+    from index_metaqa import ensure_metaqa
 
 mcp_proc = None
 cur_fts = None

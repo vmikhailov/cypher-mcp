@@ -1,0 +1,1 @@
+"""cypher-mcp benchmarks package."""
