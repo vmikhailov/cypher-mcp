@@ -86,11 +86,20 @@ Evaluations run with autonomous agents powered by **Google Gemini 3.8 Flash** ac
 
 ## Quick Start
 
-### 1. Download Prebuilt Binary
+### 1. Install
+
+#### Via Homebrew (macOS & Linux — Recommended)
+```bash
+brew install vmikhailov/tap/cypher-mcp
+```
+
+#### Download Prebuilt Binary
 Grab the latest static binary for your OS and architecture from [Releases](https://github.com/vmikhailov/cypher-mcp/releases):
 * Linux (`x86_64`, `arm64`)
 * macOS (`Apple Silicon arm64`, `Intel amd64`)
 * Windows (`x86_64`)
+
+> **Note for macOS direct downloads**: If downloaded directly without Homebrew, macOS Gatekeeper may quarantine the binary. Run `xattr -d com.apple.quarantine cypher-mcp-darwin-*` and `chmod +x cypher-mcp-darwin-*`.
 
 ### 2. Configure Your AI Agent
 
