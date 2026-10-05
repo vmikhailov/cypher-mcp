@@ -1,6 +1,7 @@
 # Cypher MCP
 
 [![Release](https://img.shields.io/github/v/release/vmikhailov/cypher-mcp?color=blue)](https://github.com/vmikhailov/cypher-mcp/releases)
+[![Homebrew](https://img.shields.io/badge/Homebrew-vmikhailov%2Ftap-orange.svg)](https://github.com/vmikhailov/homebrew-tap)
 [![CI](https://github.com/vmikhailov/cypher-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/vmikhailov/cypher-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
