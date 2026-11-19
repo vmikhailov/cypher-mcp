@@ -240,7 +240,7 @@ var serverTools = []map[string]any{
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Keywords or substrings to search for (e.g. 'Франциска', 'Михайлов', 'BMW', 'M-EW 330', 'KIT Timur')",
+					"description": "Keywords or substrings to search for (e.g. 'Alice', 'Johnson', 'Oak Street', 'Billing')",
 				},
 				"kind": map[string]any{
 					"type":        "string",
@@ -256,7 +256,7 @@ var serverTools = []map[string]any{
 	},
 	{
 		"name":        "graph_resolve_entity",
-		"description": "Resolve colloquial, misspelled, inflected, or foreign language entity names (e.g. 'Слава', 'со Славой', 'Славику', 'Beemer') to exact canonical graph node IDs using vector semantic similarity.",
+		"description": "Resolve colloquial, misspelled, inflected, or foreign language entity names (e.g. 'Al', 'Alex', 'Beemer', 'k8s') to exact canonical graph node IDs using vector semantic similarity.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -292,7 +292,7 @@ var serverTools = []map[string]any{
 				},
 				"alias": map[string]any{
 					"type":        "string",
-					"description": "Alias text to index (e.g. 'Слава', 'Вячеслав', 'Slava')",
+					"description": "Alias text to index (e.g. 'Alex', 'Al', 'Alexander')",
 				},
 				"embedding": map[string]any{
 					"type":        "array",
@@ -1334,8 +1334,8 @@ func handleGraphSearch(db *sql.DB, query string, kindFilter string, limit int, c
 		}
 	}
 
-	// 2. Inflected wordforms fallback (e.g. Russian cases/declensions):
-	// Trigram searches for substring, so 'Михайлов' matches 'Михайлова', but 'Михайлова' does not match 'Михайлов'.
+	// 2. Inflected wordforms fallback (e.g. plurals or grammatical suffixes):
+	// Trigram searches for substring, so 'engineer' matches 'engineers', but 'engineers' does not match 'engineer'.
 	// If 0 results, retry with 1 and then 2 characters trimmed from the end of words longer than 5 characters.
 	if len(items) == 0 {
 		for trimLen := 1; trimLen <= 2; trimLen++ {

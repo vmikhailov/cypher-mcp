@@ -1081,7 +1081,7 @@ func runAliasCmd(args []string, defaultDB, defaultFormat string, defaultJSON boo
 			*aliasFlag = positional[1]
 		}
 		if *nodeIDFlag == "" || *aliasFlag == "" {
-			fmt.Fprintln(errOut, "Error: node ID and alias are required. Example: cypher-mcp alias upsert person:alex 'Саша'")
+			fmt.Fprintln(errOut, "Error: node ID and alias are required. Example: cypher-mcp alias upsert person:alex 'Al'")
 			return 2
 		}
 
@@ -1264,7 +1264,7 @@ Examples:
   cypher-mcp search "Alice"
 
   # Resolve colloquial names to canonical graph entities
-  cypher-mcp resolve "Саша"
+  cypher-mcp resolve "Al"
 
   # Inspect a node and its connections
   cypher-mcp node get person:alice

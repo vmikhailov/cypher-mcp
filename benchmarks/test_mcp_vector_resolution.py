@@ -105,11 +105,11 @@ def main():
             # 4. Upsert aliases with auto-embeddings
             print("[4] Upserting aliases into vector index...")
             for node_id, alias in [
-                ("person:alexander", "Саша"),
-                ("person:alexander", "Александр"),
+                ("person:alexander", "Al"),
+                ("person:alexander", "Alexander"),
                 ("person:alexander", "Alex"),
-                ("person:elena", "Лена"),
-                ("vehicle:car-01", "БМВ тройка")
+                ("person:elena", "Ellie"),
+                ("vehicle:car-01", "BMW 3 Series")
             ]:
                 t0 = time.time()
                 res = call_rpc("tools/call", {
@@ -121,11 +121,11 @@ def main():
 
             # 5. Test Entity Resolution with colloquial inputs
             test_cases = [
-                ("со Сашей", "person:alexander"),
-                ("Санька", "person:alexander"),
-                ("Александру", "person:alexander"),
-                ("Леночка", "person:elena"),
-                ("Бэха", "vehicle:car-01")
+                ("with Alex", "person:alexander"),
+                ("Lex", "person:alexander"),
+                ("Alexander's", "person:alexander"),
+                ("El", "person:elena"),
+                ("Beemer", "vehicle:car-01")
             ]
 
             print("\n[5] Testing graph_resolve_entity:")
@@ -157,7 +157,7 @@ def main():
             print("\n[6] Combining Resolution + Cypher Query:")
             res = call_rpc("tools/call", {
                 "name": "graph_resolve_entity",
-                "arguments": {"query": "со Сашей", "limit": 1}
+                "arguments": {"query": "with Alex", "limit": 1}
             })
             resolved_node = json.loads(res["result"]["content"][0]["text"])["results"][0]["node_id"]
 

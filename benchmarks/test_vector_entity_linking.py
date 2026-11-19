@@ -2,8 +2,8 @@
 """
 Prototype: Vector Entity Resolution (Linking) on SQLite for cypher-mcp.
 
-Maps colloquial forms, aliases, diminutives, and declensions:
-  "Саша", "со Сашей", "Санька", "Александр", "Alex" -> "person:alexander"
+Maps colloquial forms, aliases, diminutives, and variations:
+  "Al", "with Alex", "Lex", "Alexander", "Alex" -> "person:alexander"
 Directly in SQLite using cosine similarity.
 """
 
@@ -114,16 +114,16 @@ def main():
             # 4. Populate Aliases with Embeddings
             aliases_to_index = [
                 ("person:alexander", "Alexander Ivanov"),
-                ("person:alexander", "Александр"),
-                ("person:alexander", "Саша"),
+                ("person:alexander", "Alexander"),
+                ("person:alexander", "Al"),
                 ("person:alexander", "Alex"),
                 ("person:elena", "Elena Ivanova"),
-                ("person:elena", "Лена"),
-                ("person:elena", "Елена"),
+                ("person:elena", "Ellie"),
+                ("person:elena", "Elena"),
                 ("person:dmitry", "Dmitry"),
-                ("person:dmitry", "Дима"),
+                ("person:dmitry", "Dima"),
                 ("vehicle:car-01", "BMW M-AB 123"),
-                ("vehicle:car-01", "БМВ тройка")
+                ("vehicle:car-01", "BMW 3 Series")
             ]
 
             print("Indexing entity vectors into SQLite...")
@@ -136,13 +136,13 @@ def main():
 
             # 6. Test various colloquial inputs
             test_inputs = [
-                "Саша",
-                "со Сашей",
-                "Санька",
-                "Александр",
-                "Леночка",
-                "Димка",
-                "Бэха"
+                "Al",
+                "with Alex",
+                "Lex",
+                "Alexander",
+                "Ellie",
+                "Dima",
+                "Beemer"
             ]
 
             print("=== Vector Entity Resolution Results ===")

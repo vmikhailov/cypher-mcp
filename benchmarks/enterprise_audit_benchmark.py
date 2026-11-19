@@ -381,7 +381,7 @@ def main():
             key_aliases = [
                 ("svc:checkout-api", "Checkout Service"),
                 ("svc:checkout-api", "Checkout API"),
-                ("svc:checkout-api", "сервис чекаута"),
+                ("svc:checkout-api", "Checkout Microservice"),
                 ("db:card-vault", "Card Vault DB"),
                 ("db:users-vault", "Users Vault DB")
             ]

@@ -194,62 +194,62 @@ def main():
         {
             "id": "doc:auth_gateway",
             "title": "Auth Gateway Service Architecture",
-            "text": "The service 'svc:auth-gateway' handles all customer authentication and JWT issuance. It is owned and maintained by Alexander Ivanov (known as 'Саша' or 'Alex' on Slack). The service directly depends on 'svc:user-store' for identity records and 'db:redis-session' for session tokens."
+            "text": "The service 'svc:auth-gateway' handles all customer authentication and JWT issuance. It is owned and maintained by Alexander Ivanov (known as 'Al' or 'Alex' on Slack). The service directly depends on 'svc:user-store' for identity records and 'db:redis-session' for session tokens."
         },
         {
             "id": "doc:billing_engine",
             "title": "Billing Engine Overview",
-            "text": "The service 'svc:billing-engine' processes subscriptions and invoice generations. Owned by Dmitry Smirnov ('Дима' or 'Dima'). It depends directly on 'svc:auth-gateway' for user validation and on 'db:postgres-orders' for persistent billing records."
+            "text": "The service 'svc:billing-engine' processes subscriptions and invoice generations. Owned by Dmitry Smirnov ('Dima'). It depends directly on 'svc:auth-gateway' for user validation and on 'db:postgres-orders' for persistent billing records."
         },
         {
             "id": "doc:payment_worker",
             "title": "Payment Worker Processing",
-            "text": "The background daemon 'svc:payment-worker' executes scheduled credit card transactions. Owned by Dmitry Smirnov ('Дима'). It depends directly on 'svc:billing-engine' to fetch invoices and emits events to 'mq:kafka-events'."
+            "text": "The background daemon 'svc:payment-worker' executes scheduled credit card transactions. Owned by Dmitry Smirnov ('Dima'). It depends directly on 'svc:billing-engine' to fetch invoices and emits events to 'mq:kafka-events'."
         },
         {
             "id": "doc:fraud_detector",
             "title": "Realtime Fraud Detection",
-            "text": "The 'svc:fraud-detector' inspects live financial operations. Owned by Elena Kuznetsova ('Лена' or 'Helen'). It directly consumes transactions from 'svc:payment-worker' and checks historical profiles in 'svc:user-store'."
+            "text": "The 'svc:fraud-detector' inspects live financial operations. Owned by Elena Kuznetsova ('Ellie' or 'Helen'). It directly consumes transactions from 'svc:payment-worker' and checks historical profiles in 'svc:user-store'."
         },
         {
             "id": "doc:audit_logger",
             "title": "Compliance Audit Logger",
-            "text": "The service 'svc:audit-logger' archives security and financial logs. Owned by Elena Kuznetsova ('Лена'). It consumes all stream messages from 'mq:kafka-events' and persists them into 'db:clickhouse-lake'."
+            "text": "The service 'svc:audit-logger' archives security and financial logs. Owned by Elena Kuznetsova ('Ellie'). It consumes all stream messages from 'mq:kafka-events' and persists them into 'db:clickhouse-lake'."
         },
         {
             "id": "doc:analytics_api",
             "title": "Analytics and Reporting API",
-            "text": "The 'svc:analytics-api' powers executive dashboards and BI reporting. Owned by Mikhail Popov ('Миша' or 'Mike'). It directly queries 'db:clickhouse-lake' and does not publish to Kafka."
+            "text": "The 'svc:analytics-api' powers executive dashboards and BI reporting. Owned by Mikhail Popov ('Mike'). It directly queries 'db:clickhouse-lake' and does not publish to Kafka."
         },
         {
             "id": "doc:notification_dispatcher",
             "title": "Notification Dispatcher Service",
-            "text": "The service 'svc:notification-dispatcher' sends transactional SMS and emails. Owned by Olga Sokolova ('Оля'). It listens to events from 'mq:kafka-events' and dispatches alerts."
+            "text": "The service 'svc:notification-dispatcher' sends transactional SMS and emails. Owned by Olga Sokolova ('Ollie'). It listens to events from 'mq:kafka-events' and dispatches alerts."
         },
         {
             "id": "doc:user_store",
             "title": "User Store Core Microservice",
-            "text": "The service 'svc:user-store' manages user credentials and profiles. Owned by Alexander Ivanov ('Саша'). It depends on 'db:postgres-users' for durable storage."
+            "text": "The service 'svc:user-store' manages user credentials and profiles. Owned by Alexander Ivanov ('Al'). It depends on 'db:postgres-users' for durable storage."
         },
         {
             "id": "doc:infra_redis",
             "title": "Redis Session Cache Infrastructure",
-            "text": "Database 'db:redis-session' provides sub-millisecond session validation. Managed by Alexander Ivanov ('Саша'). Hosted on physical server 'srv:cache-01'."
+            "text": "Database 'db:redis-session' provides sub-millisecond session validation. Managed by Alexander Ivanov ('Al'). Hosted on physical server 'srv:cache-01'."
         },
         {
             "id": "doc:infra_pg_orders",
             "title": "Postgres Orders Database Infrastructure",
-            "text": "Database 'db:postgres-orders' stores financial ledgers and invoices. Managed by Dmitry Smirnov ('Дима'). Hosted on physical server 'srv:db-node-01'."
+            "text": "Database 'db:postgres-orders' stores financial ledgers and invoices. Managed by Dmitry Smirnov ('Dima'). Hosted on physical server 'srv:db-node-01'."
         },
         {
             "id": "doc:infra_pg_users",
             "title": "Postgres Users Database Infrastructure",
-            "text": "Database 'db:postgres-users' stores customer profiles. Managed by Alexander Ivanov ('Саша'). Hosted on physical server 'srv:db-node-02'."
+            "text": "Database 'db:postgres-users' stores customer profiles. Managed by Alexander Ivanov ('Al'). Hosted on physical server 'srv:db-node-02'."
         },
         {
             "id": "doc:infra_clickhouse",
             "title": "ClickHouse Analytics Data Lake",
-            "text": "Database 'db:clickhouse-lake' stores columnar metrics and logs. Managed by Mikhail Popov ('Миша'). Hosted on server cluster 'srv:analytics-cluster'."
+            "text": "Database 'db:clickhouse-lake' stores columnar metrics and logs. Managed by Mikhail Popov ('Mike'). Hosted on server cluster 'srv:analytics-cluster'."
         },
         {
             "id": "doc:dc_frankfurt_1",
@@ -376,22 +376,21 @@ def main():
             })
 
             aliases = [
-                ("person:alexander", "Саша"),
-                ("person:alexander", "Александр"),
+                ("person:alexander", "Al"),
+                ("person:alexander", "Alexander"),
                 ("person:alexander", "Alex"),
-                ("person:dmitry", "Дима"),
-                ("person:dmitry", "Дмитрий"),
+                ("person:dmitry", "Dmitry"),
                 ("person:dmitry", "Dima"),
-                ("person:elena", "Лена"),
-                ("person:elena", "Алёна"),
+                ("person:elena", "Ellie"),
+                ("person:elena", "Elena"),
                 ("person:elena", "Helen"),
-                ("person:mikhail", "Миша"),
-                ("person:mikhail", "Михаил"),
-                ("person:olga", "Оля"),
-                ("person:olga", "Ольга"),
-                ("svc:payment-worker", "платежный воркер"),
+                ("person:mikhail", "Mike"),
+                ("person:mikhail", "Mikhail"),
+                ("person:olga", "Ollie"),
+                ("person:olga", "Olga"),
+                ("svc:payment-worker", "payment daemon"),
                 ("svc:payment-worker", "payment worker"),
-                ("srv:cache-01", "кэш-сервер")
+                ("srv:cache-01", "cache server")
             ]
 
             print("3. Indexing entity aliases into Graph vector index...")
@@ -434,7 +433,7 @@ def main():
                     "parameters": {
                         "type": "OBJECT",
                         "properties": {
-                            "query": {"type": "STRING", "description": "Entity name or phrase (e.g. 'Саша', 'платежный воркер')"},
+                            "query": {"type": "STRING", "description": "Entity name or phrase (e.g. 'Al', 'payment worker')"},
                             "limit": {"type": "INTEGER", "description": "Max candidates (default: 3)"}
                         },
                         "required": ["query"]
@@ -457,25 +456,25 @@ def main():
                 {
                     "id": "task_1_colloquial_1hop",
                     "name": "Colloquial 1-Hop Discovery",
-                    "prompt": "Кто у нас отвечает за шлюз авторизации (auth gateway)? Пользователь в чате пишет: 'Спроси у Саши, это его сервис?'. Назови полное имя ответственного инженера и его точную роль.",
+                    "prompt": "Who owns the auth gateway? Someone in chat asked: 'Ask Al, is that his service?'. Give the full name of the responsible engineer and their exact role.",
                     "expected_facts": ["Alexander Ivanov", "Staff Architect"]
                 },
                 {
                     "id": "task_2_multihop_2hop",
                     "name": "Multi-Hop Transitive Dependency (2-Hop)",
-                    "prompt": "В каком именно датацентре (город и название зоны) физически расположен сервер базы данных, от которой зависит платежный воркер (svc:payment-worker)?",
+                    "prompt": "In which datacenter (city and zone name) is the database server physically located that the payment worker (svc:payment-worker) depends on?",
                     "expected_facts": ["Frankfurt", "dc:frankfurt-zone-1"]
                 },
                 {
                     "id": "task_3_blast_radius_3hop",
                     "name": "Blast Radius Impact Chain (3-Hop)",
-                    "prompt": "Инженеры зафиксировали отказ кэш-сервера srv:cache-01. Перечисли ВСЕ сервисы, чья работа будет затронута по цепочке зависимостей, и ВСЕХ инженеров (владельцев этих сервисов), которых нужно вызвать в war room.",
+                    "prompt": "Engineers reported a failure on cache server srv:cache-01. List ALL services affected along the dependency chain, and ALL engineers (owners of those services) who need to be paged into the war room.",
                     "expected_facts": ["svc:auth-gateway", "svc:billing-engine", "svc:payment-worker", "svc:fraud-detector", "Alexander Ivanov", "Dmitry Smirnov", "Elena Kuznetsova"]
                 },
                 {
                     "id": "task_4_negation_aggregation",
                     "name": "Global Negation & Aggregation",
-                    "prompt": "Сколько ВСЕГО микросервисов (kind: 'Service') в нашей инфраструктуре НЕ зависят от брокера сообщений Kafka (mq:kafka-events)? Назови их точное количество и перечисли их идентификаторы.",
+                    "prompt": "How many microservices (kind: 'Service') in total in our infrastructure do NOT depend on the Kafka message broker (mq:kafka-events)? Give the exact count and list their IDs.",
                     "expected_facts": ["svc:auth-gateway", "svc:billing-engine", "svc:analytics-api", "svc:user-store", "4"]
                 }
             ]

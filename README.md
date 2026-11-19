@@ -97,7 +97,7 @@ mcp_servers:
 | Tool | Mode | Description |
 | :--- | :--- | :--- |
 | `graph_query` | Read-only | Transpiles and executes OpenCypher against SQLite. Returns JSON records with compile and execution timing metrics. |
-| `graph_resolve_entity` | Read-only | Vector semantic entity resolution (Entity Linking). Resolves colloquial, inflected, misspelled, or multilingual entity mentions (e.g. "со Славой", "Славика") to canonical graph node IDs. |
+| `graph_resolve_entity` | Read-only | Vector semantic entity resolution (Entity Linking). Resolves colloquial, inflected, misspelled, or multilingual entity mentions (e.g. "k8s", "Beemer", "Al") to canonical graph node IDs. |
 | `graph_upsert_alias` | Mutation | Associates an alias or alternative name with a graph node and indexes its embedding vector into SQLite. |
 | `graph_search` | Read-only | Full-text search (SQLite FTS5) across node IDs and JSON property values. Finds entry-point nodes before path traversals. |
 | `graph_batch_upsert` | Mutation | Atomically upserts multiple nodes and/or edges in a single ACID transaction with schema validation. |

@@ -522,7 +522,7 @@ func TestCLI_AliasAndResolve(t *testing.T) {
 		"alias", "upsert",
 		"--db", dbPath,
 		"--id", "person:alex",
-		"--alias", "Саша",
+		"--alias", "Al",
 		"--embedding", "[0.5, 0.5, 0.5, 0.5]",
 	}, nil, &out, &errOut)
 	if code != 0 {

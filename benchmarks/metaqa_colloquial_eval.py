@@ -3,7 +3,7 @@ MetaQA Colloquial & Multilingual Benchmark:
 Evaluating cypher-mcp with Vector Entity Resolution vs Text Search on 134,741 Facts.
 
 Tests real-world user queries:
-- Russian names: "Джон Красински", "Мишель Трахтенберг", "Поймай меня если сможешь"
+- Multilingual & colloquial names: "Jonny Krasinski", "Michel Trachtenberg", "Catch Me If U Can"
 - Diminutives & Typos: "Jonny Krasinski", "Michel Trachtenberg"
 """
 

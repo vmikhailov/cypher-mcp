@@ -93,8 +93,8 @@ func TestVectorEntityResolutionDB(t *testing.T) {
 	}
 
 	// Upsert alias with precomputed vector
-	vecSlava := []float32{0.9, 0.1, 0.0}
-	_, err = handleUpsertAlias(db, "person:alexander", "Саша", vecSlava)
+	vecAlex := []float32{0.9, 0.1, 0.0}
+	_, err = handleUpsertAlias(db, "person:alexander", "Al", vecAlex)
 	if err != nil {
 		t.Fatalf("upsert alias: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestVectorEntityResolutionDB(t *testing.T) {
 	// Instead of calling remote API in unit test, test candidate scoring logic directly
 	qBlob, _ := encodeEmbedding([]float32{0.88, 0.12, 0.0})
 	qVec, _ := decodeEmbedding(qBlob)
-	candBlob, _ := encodeEmbedding(vecSlava)
+	candBlob, _ := encodeEmbedding(vecAlex)
 	candVec, _ := decodeEmbedding(candBlob)
 	score, err := dotProduct(qVec, candVec)
 	if err != nil {

@@ -725,47 +725,45 @@ func TestGraphSearch_FTS5(t *testing.T) {
 	defer dbRO.Close()
 
 	// Seed nodes
-	_, err = handleSetNode(db, "person:slava", "Person", map[string]any{
-		"name":    "Vyacheslav Mikhailov",
-		"name_ru": "Вячеслав Михайлов",
-		"city":    "München",
-		"note":    "Lives on Franziska-Schmitz-Str. 6",
+	_, err = handleSetNode(db, "person:alice", "Person", map[string]any{
+		"name": "Alice Johnson",
+		"city": "München",
+		"note": "Lives on Oak Street 12",
 	})
 	if err != nil {
 		t.Fatalf("set node 1 failed: %v", err)
 	}
 
-	_, err = handleSetNode(db, "person:katya", "Person", map[string]any{
-		"name":    "Ekaterina Mikhailova",
-		"name_ru": "Екатерина Михайлова",
-		"city":    "München",
+	_, err = handleSetNode(db, "person:bob", "Person", map[string]any{
+		"name": "Bob Johnsons",
+		"city": "München",
 	})
 	if err != nil {
 		t.Fatalf("set node 2 failed: %v", err)
 	}
 
-	_, err = handleSetNode(db, "car:m_ew_330", "Vehicle", map[string]any{
-		"brand":         "BMW",
-		"model":         "X3",
-		"license_plate": "M-EW 330",
+	_, err = handleSetNode(db, "car:abc_1234", "Vehicle", map[string]any{
+		"brand":         "Audi",
+		"model":         "Q5",
+		"license_plate": "ABC-1234",
 	})
 	if err != nil {
 		t.Fatalf("set node 3 failed: %v", err)
 	}
 
-	_, err = handleSetNode(db, "apt:franziska_6", "Apartment", map[string]any{
-		"address": "Franziska-Schmitz-Str. 6",
+	_, err = handleSetNode(db, "apt:oak_12", "Apartment", map[string]any{
+		"address": "Oak Street 12",
 		"city":    "München",
-		"plz":     80634,
+		"plz":     80331,
 	})
 	if err != nil {
 		t.Fatalf("set node 4 failed: %v", err)
 	}
 
-	// 1. Trigram substring matching in Russian: "Михайлов" should match BOTH Mikhailov and Mikhailova
-	resStr, err := handleGraphSearch(dbRO, "Михайлов", "", 10)
+	// 1. Trigram substring matching: "Johnson" should match BOTH Johnson and Johnsons
+	resStr, err := handleGraphSearch(dbRO, "Johnson", "", 10)
 	if err != nil {
-		t.Fatalf("search Михайлов failed: %v", err)
+		t.Fatalf("search Johnson failed: %v", err)
 	}
 	var resM struct {
 		Count   int                `json:"count"`
@@ -775,7 +773,7 @@ func TestGraphSearch_FTS5(t *testing.T) {
 		t.Fatalf("unmarshal resM failed: %v", err)
 	}
 	if resM.Count != 2 {
-		t.Fatalf("expected 2 results for Михайлов (both Mikhailov and Mikhailova via trigram), got %d: %+v", resM.Count, resM.Results)
+		t.Fatalf("expected 2 results for Johnson (both Johnson and Johnsons via trigram), got %d: %+v", resM.Count, resM.Results)
 	}
 
 	// 2. Search with umlaut / German characters: "München"
@@ -794,10 +792,10 @@ func TestGraphSearch_FTS5(t *testing.T) {
 		t.Fatalf("expected 3 results for München, got %d", res1.Count)
 	}
 
-	// 3. Short search (< 3 chars): "X3"
-	resStr, err = handleGraphSearch(dbRO, "X3", "", 10)
+	// 3. Short search (< 3 chars): "Q5"
+	resStr, err = handleGraphSearch(dbRO, "Q5", "", 10)
 	if err != nil {
-		t.Fatalf("search X3 failed: %v", err)
+		t.Fatalf("search Q5 failed: %v", err)
 	}
 	var resShort struct {
 		Count   int                `json:"count"`
@@ -806,8 +804,8 @@ func TestGraphSearch_FTS5(t *testing.T) {
 	if err := json.Unmarshal([]byte(resStr), &resShort); err != nil {
 		t.Fatalf("unmarshal resShort failed: %v", err)
 	}
-	if resShort.Count != 1 || resShort.Results[0].ID != "car:m_ew_330" {
-		t.Fatalf("expected car:m_ew_330 for X3, got %+v", resShort)
+	if resShort.Count != 1 || resShort.Results[0].ID != "car:abc_1234" {
+		t.Fatalf("expected car:abc_1234 for Q5, got %+v", resShort)
 	}
 
 	// 4. Empty search results: must return [] (never null in JSON)
@@ -1002,9 +1000,9 @@ func TestSchema_V030_AllFixes(t *testing.T) {
 	defer dbRO.Close()
 
 	// 1. P1: Identifier validation rules (only ASCII alphanumeric + underscore)
-	_, err = handleSchemaDefine(db, "add_kind", "Проект", "", "", "", "", true)
+	_, err = handleSchemaDefine(db, "add_kind", "Prüfung", "", "", "", "", true)
 	if err == nil || !strings.Contains(err.Error(), "alphanumeric") {
-		t.Fatalf("expected non-ASCII identifier 'Проект' to be rejected, got: %v", err)
+		t.Fatalf("expected non-ASCII identifier 'Prüfung' to be rejected, got: %v", err)
 	}
 	_, err = handleSchemaDefine(db, "add_kind", "my-kind", "", "", "", "", true)
 	if err == nil || !strings.Contains(err.Error(), "alphanumeric") {
@@ -1032,7 +1030,7 @@ func TestSchema_V030_AllFixes(t *testing.T) {
 	}
 
 	// Insert nodes and edges
-	_, err = handleSetNode(db, "p1", "Person", map[string]any{"name": "Вячеслав Михайлов", "role": "engineer"})
+	_, err = handleSetNode(db, "p1", "Person", map[string]any{"name": "Lukas Müller", "role": "engineer"})
 	if err != nil {
 		t.Fatalf("set node p1: %v", err)
 	}
@@ -1045,13 +1043,13 @@ func TestSchema_V030_AllFixes(t *testing.T) {
 		t.Fatalf("set edge: %v", err)
 	}
 
-	// 3. P0: Cyrillic text in Cypher queries works properly
-	cyrRes, err := handleGraphQuery(dbRO, "MATCH (p:Person {name: 'Вячеслав Михайлов'}) RETURN p.role AS role, p.name AS name")
+	// 3. P0: Unicode text in Cypher queries works properly
+	uniRes, err := handleGraphQuery(dbRO, "MATCH (p:Person {name: 'Lukas Müller'}) RETURN p.role AS role, p.name AS name")
 	if err != nil {
-		t.Fatalf("cyrillic query failed: %v", err)
+		t.Fatalf("unicode query failed: %v", err)
 	}
-	if !strings.Contains(cyrRes, "Вячеслав Михайлов") || !strings.Contains(cyrRes, "engineer") {
-		t.Fatalf("unexpected cyrillic query response: %s", cyrRes)
+	if !strings.Contains(uniRes, "Lukas Müller") || !strings.Contains(uniRes, "engineer") {
+		t.Fatalf("unexpected unicode query response: %s", uniRes)
 	}
 
 	// 4. P2: graph_search does NOT find by JSON property keys (e.g. searching 'name' should not match p1 whose property name is 'name')
@@ -1064,14 +1062,14 @@ func TestSchema_V030_AllFixes(t *testing.T) {
 		t.Fatalf("search for JSON key 'role' incorrectly matched node p1: %s", searchKeyRes)
 	}
 
-	// Searching with inflected Russian forms ('Михайлова', 'Михайловым') should find p1 ('Михайлов')
-	for _, inflected := range []string{"Михайлова", "Михайловым"} {
+	// Searching with inflected forms ('engineers', 'engineered') should find p1 ('engineer')
+	for _, inflected := range []string{"engineers", "engineered"} {
 		searchValRes, err := handleGraphSearch(dbRO, inflected, "", 10)
 		if err != nil {
 			t.Fatalf("search '%s' failed: %v", inflected, err)
 		}
 		if !strings.Contains(searchValRes, `"id": "p1"`) {
-			t.Fatalf("expected inflected search '%s' to match 'Михайлов' in p1, got: %s", inflected, searchValRes)
+			t.Fatalf("expected inflected search '%s' to match 'engineer' in p1, got: %s", inflected, searchValRes)
 		}
 	}
 

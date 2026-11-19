@@ -31,7 +31,7 @@ var ServerTools = []map[string]any{
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Keywords or substrings to search for (e.g. 'Франциска', 'Михайлов', 'BMW', 'M-EW 330', 'KIT Timur')",
+					"description": "Keywords or substrings to search for (e.g. 'Alice', 'Johnson', 'Oak Street', 'Billing')",
 				},
 				"kind": map[string]any{
 					"type":        "string",
@@ -47,7 +47,7 @@ var ServerTools = []map[string]any{
 	},
 	{
 		"name":        "graph_resolve_entity",
-		"description": "Resolve colloquial, misspelled, inflected, or foreign language entity names (e.g. 'Слава', 'со Славой', 'Славику', 'Beemer') to exact canonical graph node IDs using vector semantic similarity.",
+		"description": "Resolve colloquial, misspelled, inflected, or foreign language entity names (e.g. 'Al', 'Alex', 'Beemer', 'k8s') to exact canonical graph node IDs using vector semantic similarity.",
 		"inputSchema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -83,7 +83,7 @@ var ServerTools = []map[string]any{
 				},
 				"alias": map[string]any{
 					"type":        "string",
-					"description": "Alias text to index (e.g. 'Слава', 'Вячеслав', 'Slava')",
+					"description": "Alias text to index (e.g. 'Alex', 'Al', 'Alexander')",
 				},
 				"embedding": map[string]any{
 					"type":        "array",
