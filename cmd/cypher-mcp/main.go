@@ -317,7 +317,7 @@ var serverTools = []map[string]any{
 						"properties": map[string]any{
 							"id": map[string]any{
 								"type":        "string",
-								"description": "Unique identifier (e.g. 'person:slava')",
+								"description": "Unique identifier (e.g. 'person:alice')",
 							},
 							"kind": map[string]any{
 								"type":        "string",
@@ -368,7 +368,7 @@ var serverTools = []map[string]any{
 			"properties": map[string]any{
 				"id": map[string]any{
 					"type":        "string",
-					"description": "Unique identifier for the node (e.g., 'person:slava', 'apt:franziska_6')",
+					"description": "Unique identifier for the node (e.g., 'person:alice', 'apt:oak_12')",
 				},
 				"kind": map[string]any{
 					"type":        "string",

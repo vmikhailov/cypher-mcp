@@ -88,6 +88,9 @@ mcp_servers:
     args: ["--db", "knowledge_graph.db"]
 ```
 
+### 3. Add the Agent Skill (Optional)
+An Agent Skill with read/write/schema conventions is included in [`skills/cypher-mcp/SKILL.md`](skills/cypher-mcp/SKILL.md). Copy it into your agent's skills directory (for example `.agents/skills/cypher-mcp/` or `~/.claude/skills/cypher-mcp/`) so agents inspect the schema, deduplicate nodes before writing, and use safe anchored Cypher queries automatically.
+
 ---
 
 ## MCP Tools
