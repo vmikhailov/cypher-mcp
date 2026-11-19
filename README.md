@@ -5,8 +5,7 @@
 [![CI](https://github.com/vmikhailov/cypher-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/vmikhailov/cypher-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A **Zero-CGO Model Context Protocol (MCP)** server and **standalone CLI tool** that equips AI agents and developers with an embedded SQLite Knowledge Graph
-queried via declarative **OpenCypher** without a separate database server.
+A **Zero-CGO Model Context Protocol (MCP)** server and **standalone CLI tool** that gives AI agents and developers an embedded SQLite knowledge graph queried via **Cypher** — no separate database server required.
 
 Powered by [`cypher-sql-go`](https://github.com/vmikhailov/cypher-sql-go) and pure-Go SQLite (`modernc.org/sqlite`).
 
@@ -14,74 +13,19 @@ Powered by [`cypher-sql-go`](https://github.com/vmikhailov/cypher-sql-go) and pu
 
 ## Why Cypher MCP?
 
-Traditional AI agent memory architectures suffer from major tradeoffs:
-* **Vector RAG:** Fails at deterministic multi-hop reasoning (*"Who is the landlord of the apartment where my son studies?"*).
-* **Enterprise Graph Databases (Neo4j, Memgraph):** Require heavy Docker daemons, 1-2 GB of RAM, network roundtrips, and continuous upkeep.
-* **Raw SQL / Text Memory:** LLMs hallucinate complex recursive CTEs or flood their context window with raw files.
+Common approaches to AI agent memory each have practical tradeoffs:
+* **Vector RAG:** Struggles with deterministic multi-hop queries (*"Who is the landlord of the apartment where my son studies?"*).
+* **Dedicated Graph Databases (Neo4j, Memgraph):** Require a separate server/Docker daemon, 1–2 GB of RAM, network roundtrips, and ongoing ops.
+* **Flat Markdown / Raw SQL:** Markdown files accumulate contradicting notes once multiple agents write to them, and LLMs frequently make mistakes on complex recursive SQL CTEs.
 
-**Cypher MCP bridges this gap:**
-1. **Sub-Millisecond Speed:** In-process query transpilation and execution runs in **< 0.5 ms** (total stdio roundtrip).
-2. **Zero-CGO Static Binary:** Single **~15MB** self-contained executable with zero runtime dependencies. No Docker, no Python, no C++ compilers.
-3. **Native Agent Fluency:** LLMs intuitively generate OpenCypher graph traversals (`MATCH (p:Person)-[:OWES]->(o) RETURN o`) with near 100% accuracy.
-4. **ACID Relational Foundation:** Single standard SQLite `.db` file powered by relational B-Tree indexes and JSON1.
+**What Cypher MCP does instead:**
+1. **Single Static Binary (~15 MB):** Zero-CGO executable with no runtime dependencies — no Docker, Python, or C++ toolchain.
+2. **One Local SQLite File:** Standard ACID SQLite `.db` file using B-Tree indexes, JSON1, and FTS5, easily shared across different agents and tools.
+3. **In-Process Cypher-to-SQL:** Transpiles Cypher queries (`MATCH (p:Person)-[:OWES]->(o) RETURN o`) to SQLite SQL in-process (< 0.5 ms typical engine latency).
+4. **Optional Evolving Schema:** Agents can define and extend allowed node/edge types without turning the graph into an unstructured dump.
 
 ### Scaling Beyond Local Storage
-If you need a shared multi-tenant graph for your organization, connect [`cypher-sql-go`](https://github.com/vmikhailov/cypher-sql-go) to a centralized backend (e.g. PostgreSQL with `pgvector`) to support concurrent team access across microservices, IAM trees, and git repositories.
-
----
-
-## Performance & Architecture Benchmarks
-
-### Engine Architectural Characteristics
-
-| Metric | Cypher MCP (Embedded) | Text-to-SQL (Relational) | Vector RAG (Top-K Chunks) | Neo4j (Docker JVM) |
-| :--- | :--- | :--- | :--- | :--- |
-| **2+ Hop Reasoning** | **100% (Deterministic)** | ~60% (CTE Hallucinations) | < 40% (Context Fragmentation) | 100% (Deterministic) |
-| **Prompt Token Overhead** | **~110 tokens** | ~350 tokens (3.2x) | ~1,800 tokens (16x) | ~120 tokens |
-| **Engine Query Latency** | **< 0.5 ms** (in-process) | ~0.8 ms | ~250 ms (Embedding + Gen) | 15 - 45 ms (Bolt TCP) |
-| **Memory Footprint** | **~15 MB RAM** | ~15 MB RAM | 200 MB - 1 GB | 1.2 - 2.5 GB RAM |
-| **Infrastructure Setup** | **Zero (Single static binary)** | Schema translation needed | Embedding service & vector DB | Docker daemon & JVM |
-
-### Empirical Agent Benchmarks Summary
-
-Evaluations run with autonomous agents powered by **Google Gemini 3.8 Flash** across enterprise and academic multi-hop datasets:
-
-| Benchmark / Dataset | Task Topology | GraphRAG Recall | Plain RAG Recall | GraphRAG Tokens | Plain RAG Tokens | Token Savings | Latency (Graph vs Plain) |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| [**Active Directory Security**](benchmarks/reports/CYBERSECURITY_AD_BENCHMARK.md)<br>(BloodHound: 953 nodes, 4.7k ACLs) | Privilege escalation, credential dumping, blast radius | **66.7%** | 33.3% | **14.0k** | 366.7k | **26.2x fewer** | **13.1s** vs 24.6s |
-| [**MetaQA Colloquial & Typos**](benchmarks/reports/METAQA_COLLOQUIAL_BENCHMARK.md)<br>(134,741 facts, 43k nodes) | 1-3 Hops with typos, nicknames, informal titles | **100.0%** (F1: 100%) | 100.0% (F1: 90.9%) | **4.2k** | 5.8k | **1.4x fewer** | **6.3s** vs 20.3s (3.2x faster) |
-| [**MetaQA Standard Multi-Hop**](benchmarks/reports/METAQA_BENCHMARK_REPORT.md)<br>(134,741 facts, 43k nodes) | 1-hop, 2-hop, 3-hop relationship chaining | **100.0%** | 91.7% | **1.4k** | 1.1k | Direct graph traversals | **3.1s** vs 7.6s (2.4x faster) |
-| [**GraphRAG vs Plain Vector RAG**](benchmarks/reports/VECTOR_GRAPH_VS_PLAIN_RAG.md)<br>(Synthetic corporate topology) | Conversational entity linking and 2-hop dependencies | **75.0%** | 87.5% | **21.6k** | 18.3k | Entity linking precision | **18.7s** vs 17.9s |
-| [**Enterprise Audit**](benchmarks/reports/ENTERPRISE_250_DOCS_AUDIT.md)<br>(250 corporate docs, 230 services) | Transitive blast radius, unpatched DBs, orphaned services | **93.8%** | 0.0% (timeouts) | **26.9k** | 39.8k | **1.5x fewer** | **19.8s** vs 29.2s (timeout) |
-| [**2WikiMultihopQA**](benchmarks/reports/2WIKI_MULTIHOP_BENCHMARK.md)<br>(Academic benchmark w/ distractors) | Multi-hop reasoning across distractor documents | **100.0%** | 100.0% | **4.2k** | 1.5k | Structural fact linking | **6.1s** vs 3.2s |
-| [**Zero-Shortcut Depth Scaling**](benchmarks/reports/DEPTH_SCALING_BENCHMARK.md)<br>(Branching tree, 1 to 4 hops) | Scaling search depth where intermediate nodes lack shortcuts | **100.0%** | 75.0% (0% at 4-hop) | **6.6k** | 4.6k | Exhaustive traversal | **12.6s** vs 15.5s (1.6x faster at 4-hop) |
-| [**Architecture Agent Evals**](benchmarks/reports/AGENT_EVALS.md)<br>(Distributed microservice graph) | Diagnostic multi-hop failure analysis and cascade impact | **100.0%** | 100.0% | **4.2k** | 2.7k | Single query paths | **3.8s** vs 12.5s (3.3x faster) |
-| [**Engine Micro-Benchmarks**](benchmarks/reports/BENCHMARKS.md)<br>(Go / SQLite in-process B-Tree) | Point lookups, 2-hop joins, recursive traversal, FTS5 | **100.0%** | 75.0% | **~110 / q** | ~1,800 / q | **16.4x fewer** | **<0.5 ms** vs ~250 ms |
-
----
-
-## MCP Tools
-
-`cypher-mcp` exposes 10 standard MCP tools via JSON-RPC 2.0 (stdio):
-
-| Tool | Mode | Description |
-| :--- | :--- | :--- |
-| `graph_query` | Read-only | Transpiles and executes OpenCypher against SQLite. Returns JSON records with compile and execution timing metrics. |
-| `graph_resolve_entity` | Read-only | Vector semantic entity resolution (Entity Linking). Resolves colloquial, inflected, misspelled, or multilingual entity mentions (e.g. "со Славой", "Славика") to canonical graph node IDs. |
-| `graph_upsert_alias` | Mutation | Associates an alias or alternative name with a graph node and indexes its embedding vector into SQLite. |
-| `graph_search` | Read-only | Full-text search (SQLite FTS5) across node IDs and JSON property values. Finds entry-point nodes before path traversals. |
-| `graph_batch_upsert` | Mutation | Atomically upserts multiple nodes and/or edges in a single ACID transaction with schema validation. |
-| `graph_schema` | Read-only | Summarizes graph topology: counts of nodes and edges by kind, total graph volume, and active schema rules. |
-| `graph_schema_define` | DDL / Governance | Defines or removes allowed node kinds and directed relationships in the taxonomy schema. |
-| `graph_set_node` | Mutation | Upserts a node by unique `id`, `kind`, and dynamic JSON `properties`. Validates against schema if active. |
-| `graph_set_edge` | Mutation | Upserts a directed relationship between `from_id` and `to_id` with `kind` and `properties`. Validates against schema if active. |
-| `graph_delete_node` | Mutation | Deletes a node and cascade-cleans all its incoming and outgoing relationships. |
-
-### Variable-Length Path Traversal
-`graph_query` supports recursive variable-length pattern matching:
-* **Syntax:** `-[*1..3]->` (outgoing 1 to 3 hops), `<-[*2..5]-` (incoming 2 to 5 hops), or `-[*]->` (arbitrary depth).
-* **10-Hop Default Cap:** Unbounded patterns like `-[*]->` and `-[*1..]->` automatically default to a maximum depth of 10 hops (`min=1, max=10`) to prevent runaway queries.
-* **Safety Guardrails:** All queries time out after 15 seconds. Always anchor at least one endpoint (e.g. `(p:Person {name: 'Alice'})-[*1..3]->(target)`); fully unanchored traversals (`MATCH (x)-[*1..2]->(y)`) strictly require an explicit `LIMIT` (and depth `<= 3`) to prevent full-graph combinatorial explosion.
+If you need a shared multi-tenant graph across a team, [`cypher-sql-go`](https://github.com/vmikhailov/cypher-sql-go) can target a centralized backend (such as PostgreSQL with `pgvector`).
 
 ---
 
@@ -146,9 +90,63 @@ mcp_servers:
 
 ---
 
+## MCP Tools
+
+`cypher-mcp` exposes 10 standard MCP tools via JSON-RPC 2.0 (stdio):
+
+| Tool | Mode | Description |
+| :--- | :--- | :--- |
+| `graph_query` | Read-only | Transpiles and executes OpenCypher against SQLite. Returns JSON records with compile and execution timing metrics. |
+| `graph_resolve_entity` | Read-only | Vector semantic entity resolution (Entity Linking). Resolves colloquial, inflected, misspelled, or multilingual entity mentions (e.g. "со Славой", "Славика") to canonical graph node IDs. |
+| `graph_upsert_alias` | Mutation | Associates an alias or alternative name with a graph node and indexes its embedding vector into SQLite. |
+| `graph_search` | Read-only | Full-text search (SQLite FTS5) across node IDs and JSON property values. Finds entry-point nodes before path traversals. |
+| `graph_batch_upsert` | Mutation | Atomically upserts multiple nodes and/or edges in a single ACID transaction with schema validation. |
+| `graph_schema` | Read-only | Summarizes graph topology: counts of nodes and edges by kind, total graph volume, and active schema rules. |
+| `graph_schema_define` | DDL / Governance | Defines or removes allowed node kinds and directed relationships in the taxonomy schema. |
+| `graph_set_node` | Mutation | Upserts a node by unique `id`, `kind`, and dynamic JSON `properties`. Validates against schema if active. |
+| `graph_set_edge` | Mutation | Upserts a directed relationship between `from_id` and `to_id` with `kind` and `properties`. Validates against schema if active. |
+| `graph_delete_node` | Mutation | Deletes a node and cascade-cleans all its incoming and outgoing relationships. |
+
+### Variable-Length Path Traversal
+`graph_query` supports recursive variable-length pattern matching:
+* **Syntax:** `-[*1..3]->` (outgoing 1 to 3 hops), `<-[*2..5]-` (incoming 2 to 5 hops), or `-[*]->` (arbitrary depth).
+* **10-Hop Default Cap:** Unbounded patterns like `-[*]->` and `-[*1..]->` automatically default to a maximum depth of 10 hops (`min=1, max=10`) to prevent runaway queries.
+* **Safety Guardrails:** All queries time out after 15 seconds. Always anchor at least one endpoint (e.g. `(p:Person {name: 'Alice'})-[*1..3]->(target)`); fully unanchored traversals (`MATCH (x)-[*1..2]->(y)`) strictly require an explicit `LIMIT` (and depth `<= 3`) to prevent full-graph combinatorial explosion.
+
+---
+
+## Benchmarks
+
+### Architecture Comparison
+
+| Aspect | Cypher MCP (Embedded) | Text-to-SQL (Relational) | Vector RAG (Top-K Chunks) | Neo4j (Docker JVM) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Multi-Hop Queries** | Deterministic Cypher-to-SQL | Manual recursive CTEs | Top-K chunk retrieval | Deterministic Cypher |
+| **Query Latency** | < 0.5 ms (in-process) | < 1 ms (in-process) | ~100–300 ms (embed + search) | 15–45 ms (Bolt TCP) |
+| **Memory Footprint** | ~15 MB RAM | ~15 MB RAM | 200 MB – 1 GB | 1.2 – 2.5 GB RAM |
+| **Infrastructure** | Single static binary + `.db` file | App-managed SQL schema | Embedding model + vector store | Docker daemon + JVM |
+
+### Empirical Agent Benchmarks
+
+Evaluations run with **Gemini 3.8 Flash** across multi-hop datasets:
+
+| Benchmark / Dataset | Task Topology | GraphRAG Recall | Plain RAG Recall | GraphRAG Tokens | Plain RAG Tokens | Token Savings | Latency (Graph vs Plain) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| [**Active Directory Security**](benchmarks/reports/CYBERSECURITY_AD_BENCHMARK.md)<br>(BloodHound: 953 nodes, 4.7k ACLs) | Privilege escalation, credential dumping, blast radius | **66.7%** | 33.3% | **14.0k** | 366.7k | **26.2x fewer** | **13.1s** vs 24.6s |
+| [**MetaQA Colloquial & Typos**](benchmarks/reports/METAQA_COLLOQUIAL_BENCHMARK.md)<br>(134,741 facts, 43k nodes) | 1-3 Hops with typos, nicknames, informal titles | **100.0%** (F1: 100%) | 100.0% (F1: 90.9%) | **4.2k** | 5.8k | **1.4x fewer** | **6.3s** vs 20.3s (3.2x faster) |
+| [**MetaQA Standard Multi-Hop**](benchmarks/reports/METAQA_BENCHMARK_REPORT.md)<br>(134,741 facts, 43k nodes) | 1-hop, 2-hop, 3-hop relationship chaining | **100.0%** | 91.7% | **1.4k** | 1.1k | Direct graph traversals | **3.1s** vs 7.6s (2.4x faster) |
+| [**GraphRAG vs Plain Vector RAG**](benchmarks/reports/VECTOR_GRAPH_VS_PLAIN_RAG.md)<br>(Synthetic corporate topology) | Conversational entity linking and 2-hop dependencies | **75.0%** | 87.5% | **21.6k** | 18.3k | Entity linking precision | **18.7s** vs 17.9s |
+| [**Enterprise Audit**](benchmarks/reports/ENTERPRISE_250_DOCS_AUDIT.md)<br>(250 corporate docs, 230 services) | Transitive blast radius, unpatched DBs, orphaned services | **93.8%** | 0.0% (timeouts) | **26.9k** | 39.8k | **1.5x fewer** | **19.8s** vs 29.2s (timeout) |
+| [**2WikiMultihopQA**](benchmarks/reports/2WIKI_MULTIHOP_BENCHMARK.md)<br>(Academic benchmark w/ distractors) | Multi-hop reasoning across distractor documents | **100.0%** | 100.0% | **4.2k** | 1.5k | Structural fact linking | **6.1s** vs 3.2s |
+| [**Zero-Shortcut Depth Scaling**](benchmarks/reports/DEPTH_SCALING_BENCHMARK.md)<br>(Branching tree, 1 to 4 hops) | Scaling search depth where intermediate nodes lack shortcuts | **100.0%** | 75.0% (0% at 4-hop) | **6.6k** | 4.6k | Exhaustive traversal | **12.6s** vs 15.5s (1.6x faster at 4-hop) |
+| [**Architecture Agent Evals**](benchmarks/reports/AGENT_EVALS.md)<br>(Distributed microservice graph) | Diagnostic multi-hop failure analysis and cascade impact | **100.0%** | 100.0% | **4.2k** | 2.7k | Single query paths | **3.8s** vs 12.5s (3.3x faster) |
+| [**Engine Micro-Benchmarks**](benchmarks/reports/BENCHMARKS.md)<br>(Go / SQLite in-process B-Tree) | Point lookups, 2-hop joins, recursive traversal, FTS5 | **100.0%** | 75.0% | **~110 / q** | ~1,800 / q | **16.4x fewer** | **<0.5 ms** vs ~250 ms |
+
+---
+
 ## Command-Line Interface (CLI)
 
-`cypher-mcp` is a dual-mode executable. When invoked without arguments (or with `--db`/`--log` on a pipe), it operates as a standard JSON-RPC 2.0 MCP server over stdio. When invoked with any CLI subcommand, it acts as a high-performance terminal CLI tool for developers, scripts, and shell pipelines.
+`cypher-mcp` is a dual-mode executable. When invoked without arguments (or with `--db`/`--log` on a pipe), it operates as a standard JSON-RPC 2.0 MCP server over stdio. When invoked with any CLI subcommand, it acts as a terminal CLI tool for developers, scripts, and shell pipelines.
 
 ### Subcommands Overview
 
