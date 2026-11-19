@@ -45,7 +45,7 @@ type JSONRPCResponse struct {
 	Error   any              `json:"error,omitempty"`
 }
 
-const appVersion = "0.4.0"
+const appVersion = "0.4.1"
 
 var nullRawID = json.RawMessage("null")
 
