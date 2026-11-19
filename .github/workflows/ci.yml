@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go: ["1.26.8", "1.27.1"]
+        go: ["1.26.x", "1.27.x"]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
@@ -41,7 +41,7 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Staticcheck
-        if: matrix.go == '1.26.8'
+        if: matrix.go == '1.26.x'
         run: go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./...
       - name: Go tests
         run: go test -count=1 -cover ./...
@@ -60,6 +60,6 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
-          go-version: "1.26.8"
+          go-version: "1.26.x"
           cache: true
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
